@@ -1,5 +1,6 @@
 /data
 /refrence
+/zed-web-gateway/.git.backup
 /zed-web-gateway/target
 /zed-web-frontend/dist
 /zed-web-frontend/node_modules
