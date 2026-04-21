@@ -1,0 +1,21 @@
+services:
+  zed-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zed-web:latest
+    container_name: zed-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      GATEWAY_HOST: ${GATEWAY_HOST:-0.0.0.0}
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      FRONTEND_PORT: ${FRONTEND_PORT:-8081}
+      ZED_WEB_DATA_DIR: /var/lib/zed-web
+      SSH_AUTH_SOCK: /ssh-agent
+    volumes:
+      - ${ZED_WEB_DATA_PATH:-./data}:/var/lib/zed-web
+      - ${ZED_WEB_SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

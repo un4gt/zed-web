@@ -1,0 +1,6 @@
+/data
+/refrence
+/zed-web-gateway/target
+/zed-web-frontend/dist
+/zed-web-frontend/node_modules
+.env

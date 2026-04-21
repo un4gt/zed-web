@@ -1,0 +1,11 @@
+[package]
+name = "gateway-server"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+actix-cors.workspace = true
+actix-web.workspace = true
+gateway-web = { path = "../gateway-web" }
+tracing.workspace = true
+tracing-subscriber.workspace = true

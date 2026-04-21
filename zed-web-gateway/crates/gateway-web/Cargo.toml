@@ -1,0 +1,29 @@
+[package]
+name = "gateway-web"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "fake-remote-proxy"
+path = "src/fake_remote_proxy.rs"
+
+[dependencies]
+actix-cors.workspace = true
+actix-web.workspace = true
+actix-ws.workspace = true
+futures-util.workspace = true
+flate2.workspace = true
+gateway-core = { path = "../gateway-core" }
+gateway-ssh = { path = "../gateway-ssh" }
+gateway-zed-proxy = { path = "../gateway-zed-proxy" }
+prost.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

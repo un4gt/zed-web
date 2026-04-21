@@ -1,0 +1,9 @@
+[package]
+name = "gateway-ssh"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+base64.workspace = true
+gateway-core = { path = "../gateway-core" }
+tokio.workspace = true

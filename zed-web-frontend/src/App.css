@@ -1,0 +1,463 @@
+:root {
+  /* Zed One Dark inspired palette */
+  --bg-app: #1e2227;
+  --bg-sidebar: #21252b;
+  --bg-editor: #282c34;
+  --bg-panel: #21252b;
+  --bg-tab-active: #282c34;
+  --bg-tab-inactive: #21252b;
+  --bg-hover: rgba(255, 255, 255, 0.08);
+  
+  --border-color: #181a1f;
+  
+  --text-primary: #abb2bf;
+  --text-muted: #5c6370;
+  --text-accent: #61afef;
+  
+  --color-success: #98c379;
+  --color-warning: #e5c07b;
+  --color-error: #e06c75;
+  --color-info: #56b6c2;
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+button, input {
+  font: inherit;
+  outline: none;
+}
+
+select {
+  font: inherit;
+  outline: none;
+}
+
+button {
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button.secondary {
+  background: transparent;
+  border-color: transparent;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input {
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+select {
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+input:focus {
+  border-color: var(--text-accent);
+}
+
+select:focus {
+  border-color: var(--text-accent);
+}
+
+/* Layout */
+.app-shell {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  min-width: 260px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  overflow-y: auto;
+}
+
+.brand-block {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.brand-block h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.description {
+  display: none; /* Hide verbose description for a cleaner desktop feel */
+}
+
+.session-form {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.session-card {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-card-header, .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.session-card dl {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.session-card dt {
+  color: var(--text-muted);
+}
+
+.session-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.empty-copy {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.state-pill {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.state-ready { color: var(--color-success); background: rgba(152, 195, 121, 0.1); }
+.state-connecting, .state-reconnecting { color: var(--color-warning); background: rgba(229, 192, 123, 0.1); }
+.state-error, .state-disconnected, .state-closed { color: var(--color-error); background: rgba(224, 108, 117, 0.1); }
+
+.log-panel {
+  padding: 16px;
+  flex: 1;
+}
+
+.log-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-panel li {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+/* Main Workspace */
+.workspace-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 40px;
+  padding: 0 16px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.topbar .eyebrow, .topbar h2 {
+  display: none; /* Hide big text, make it feel like a subtle titlebar */
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.workspace-grid {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Project Tree */
+.tree-panel {
+  width: 220px;
+  min-width: 220px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-panel .panel-header {
+  padding: 12px 16px 8px;
+  margin: 0;
+}
+
+.tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.tree-entry {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  border-radius: 4px;
+  color: var(--text-primary);
+}
+
+.tree-entry span {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 24px;
+}
+
+.tree-entry strong {
+  font-weight: normal;
+}
+
+/* Editor Panel */
+.editor-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-editor);
+}
+
+.tabs-row {
+  display: flex;
+  background: var(--bg-sidebar);
+  height: 36px;
+  overflow-x: auto;
+}
+
+.tabs-row::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-empty {
+  padding: 0 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 36px;
+}
+
+.tab-chip {
+  display: flex;
+  align-items: center;
+  background: var(--bg-tab-inactive);
+  border-right: 1px solid var(--border-color);
+  color: var(--text-muted);
+  min-width: 120px;
+  max-width: 200px;
+}
+
+.tab-chip.active {
+  background: var(--bg-editor);
+  color: var(--text-primary);
+}
+
+.tab-chip button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0 12px;
+  height: 36px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  text-align: left;
+  color: inherit;
+}
+
+.tab-close {
+  width: 28px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.tab-chip:hover .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  background: var(--bg-hover);
+}
+
+.editor-surface {
+  flex: 1;
+  position: relative;
+}
+
+.editor-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.editor-placeholder p {
+  font-size: 16px;
+  margin: 0 0 8px;
+  color: var(--text-primary);
+}
+
+/* Right Rail (Diagnostics/Panels) */
+.right-rail {
+  width: 260px;
+  min-width: 260px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 16px;
+}
+
+.toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-card {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.info-card h3 {
+  font-size: 12px;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+/* Terminal Panel */
+.terminal-panel {
+  height: 30vh;
+  min-height: 200px;
+  background: var(--bg-editor);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-panel .panel-header {
+  padding: 8px 16px;
+  margin: 0;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.terminal-surface {
+  flex: 1;
+  padding: 8px;
+  overflow: hidden;
+}
