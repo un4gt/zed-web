@@ -7,6 +7,7 @@ import './App.css';
 
 const FALLBACK_GATEWAY_URL = 'http://127.0.0.1:8080';
 const DEFAULT_GATEWAY_URL = getDefaultGatewayUrl();
+const DEFAULT_SSH_HOST = getDefaultSshHost();
 
 const bufferRuntime = createBufferRuntime();
 
@@ -90,7 +91,7 @@ function App() {
   } = useWorkbenchStore();
 
   const [form, setForm] = useState({
-    host: '127.0.0.1',
+    host: DEFAULT_SSH_HOST,
     user: '',
     port: '22',
     projectPath: '/tmp',
@@ -712,7 +713,6 @@ function TerminalView({ session, gatewayUrl, onStatusChange, onLog }) {
   return <div className="terminal-surface" ref={containerRef} />;
 }
 
-function getDefaultGatewayUrl() {
 function formatSessionOpenError(error, gatewayUrl) {
   const message = String(error);
   if (typeof window === 'undefined' || !(error instanceof TypeError) || error.message !== 'Failed to fetch') {
@@ -731,6 +731,7 @@ function formatSessionOpenError(error, gatewayUrl) {
   return message;
 }
 
+function getDefaultGatewayUrl() {
   if (typeof window === 'undefined') {
     return FALLBACK_GATEWAY_URL;
   }
@@ -743,11 +744,23 @@ function formatSessionOpenError(error, gatewayUrl) {
   return origin;
 }
 
-function createBufferRuntime() {
 function isLoopbackHost(hostname) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
 }
 
+function getDefaultSshHost() {
+  if (typeof window === 'undefined') {
+    return '127.0.0.1';
+  }
+
+  if (window.location.port === '8081') {
+    return '127.0.0.1';
+  }
+
+  return 'host.docker.internal';
+}
+
+function createBufferRuntime() {
   const contents = new Map();
   const savedContents = new Map();
 
