@@ -16,6 +16,13 @@ The container uses outbound SSH directly. It does not require an SSH server on t
 ```bash
 cp .env.example .env
 mkdir -p data
+docker compose pull
+docker compose up -d
+```
+
+If you are building from source instead of using a published image, run:
+
+```bash
 docker compose build
 docker compose up -d
 ```
@@ -23,8 +30,10 @@ docker compose up -d
 Then open:
 
 ```text
-http://localhost:8080
+http://localhost:${HOST_PORT:-8080}
 ```
+
+See `DEPLOY.md` for hosted-image deployment, port customization, and troubleshooting.
 
 ### SSH credentials inside Docker
 
@@ -79,10 +88,18 @@ By default:
 
 Common environment variables:
 
+- `HOST_PORT`
 - `GATEWAY_HOST`
 - `GATEWAY_PORT`
 - `FRONTEND_PORT`
 - `ZED_WEB_DATA_DIR`
+
+Notes:
+
+- `ZED_WEB_IMAGE` selects the Docker image to run.
+- `HOST_PORT` is the public port published on the Docker host.
+- `GATEWAY_PORT` is the internal gateway port inside the container.
+- `FRONTEND_PORT` is only used by the bare-install preview flow, not by the Docker image.
 
 ## Remote Server Version Policy
 

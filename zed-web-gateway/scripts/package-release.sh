@@ -30,6 +30,7 @@ cp "$WORKSPACE_DIR/Dockerfile" "$ARTIFACT_DIR/"
 cp "$WORKSPACE_DIR/docker-compose.yml" "$ARTIFACT_DIR/"
 cp "$WORKSPACE_DIR/.env.example" "$ARTIFACT_DIR/"
 cp "$WORKSPACE_DIR/README.md" "$ARTIFACT_DIR/"
+cp "$WORKSPACE_DIR/DEPLOY.md" "$ARTIFACT_DIR/"
 cp -R "$WORKSPACE_DIR/deploy/." "$ARTIFACT_DIR/deploy/"
 cp -R "$WORKSPACE_DIR/scripts/." "$ARTIFACT_DIR/scripts/"
 

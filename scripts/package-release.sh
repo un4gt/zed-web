@@ -31,6 +31,7 @@ cp "$ROOT_DIR/Dockerfile" "$ARTIFACT_DIR/"
 cp "$ROOT_DIR/docker-compose.yml" "$ARTIFACT_DIR/"
 cp "$ROOT_DIR/.env.example" "$ARTIFACT_DIR/"
 cp "$ROOT_DIR/README.md" "$ARTIFACT_DIR/"
+cp "$ROOT_DIR/DEPLOY.md" "$ARTIFACT_DIR/"
 cp -R "$ROOT_DIR/deploy/." "$ARTIFACT_DIR/deploy/"
 cp -R "$ROOT_DIR/scripts/." "$ARTIFACT_DIR/scripts/"
 

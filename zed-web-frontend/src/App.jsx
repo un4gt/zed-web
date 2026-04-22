@@ -5,7 +5,8 @@ import '@xterm/xterm/css/xterm.css';
 import { create } from 'zustand';
 import './App.css';
 
-const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:8080';
+const FALLBACK_GATEWAY_URL = 'http://127.0.0.1:8080';
+const DEFAULT_GATEWAY_URL = getDefaultGatewayUrl();
 
 const bufferRuntime = createBufferRuntime();
 
@@ -709,6 +710,19 @@ function TerminalView({ session, gatewayUrl, onStatusChange, onLog }) {
   }, [gatewayUrl, onLog, onStatusChange, session]);
 
   return <div className="terminal-surface" ref={containerRef} />;
+}
+
+function getDefaultGatewayUrl() {
+  if (typeof window === 'undefined') {
+    return FALLBACK_GATEWAY_URL;
+  }
+
+  const { hostname, origin, port, protocol } = window.location;
+  if (port === '8081' && (hostname === '127.0.0.1' || hostname === 'localhost')) {
+    return `${protocol}//${hostname}:8080`;
+  }
+
+  return origin;
 }
 
 function createBufferRuntime() {
