@@ -1,31 +1,39 @@
 # Zed Web Docker Deployment
 
-## Recommended Path
+## Recommended Deployment
 
-Use the published container image and keep the container-internal defaults unless you are changing the image itself.
+Use the published GHCR image unless you need to build the project from source. This is the simplest and recommended way to deploy Zed Web.
 
-## Files To Download
+## Required Files
+
+Keep these files together:
 
 - `docker-compose.yml`
 - `.env.example`
 
-Create your local env file:
+Initialize your local configuration:
 
 ```bash
 cp .env.example .env
 mkdir -p data
 ```
 
-## Correct Port Model
+## Port Model
 
-There are two different kinds of ports in this setup:
+This setup uses two different kinds of ports:
 
-- `HOST_PORT`: the port exposed on the Docker host, for example `8888`
+- `HOST_PORT`: the public port exposed on the Docker host, for example `8888`
 - `GATEWAY_PORT`: the internal port used by the gateway process inside the container
 
-If port `80` or `8080` is already occupied on the host, change `HOST_PORT`. Do not change `GATEWAY_PORT` just to move the public entrypoint.
+Use them differently:
 
-Example `.env`:
+- Change `HOST_PORT` when you want the app to listen on a different host port.
+- Do not change `GATEWAY_PORT` just to move the public entrypoint.
+- Leave `GATEWAY_PORT` at `8080` unless you are intentionally changing the container internals.
+
+## Example `.env`
+
+This is a working example for the published image:
 
 ```dotenv
 ZED_WEB_IMAGE=ghcr.io/un4gt/zed-web:latest
@@ -37,14 +45,19 @@ ZED_WEB_DATA_PATH=./data
 ZED_WEB_SSH_PATH=${HOME}/.ssh
 ```
 
-## Compose Example
+Notes:
 
-The published-image compose file should look like this:
+- `ZED_WEB_IMAGE` lets you choose the image without editing `docker-compose.yml`.
+- `FRONTEND_PORT` can stay at its default value in Docker deployments. The published image serves the built frontend through the web entrypoint and does not need a separate frontend preview port.
+
+## Example `docker-compose.yml`
+
+The repository compose file supports both source builds and published images:
 
 ```yaml
 services:
   zed-web:
-    image: ghcr.io/un4gt/zed-web:latest
+    image: ${ZED_WEB_IMAGE:-ghcr.io/un4gt/zed-web:latest}
     container_name: zed-web
     restart: unless-stopped
     ports:
@@ -62,16 +75,16 @@ services:
       - "host.docker.internal:host-gateway"
 ```
 
-## Start The Service
+## Start the Service
+
+For the published image:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-With the repository compose file, you can avoid editing YAML by setting `ZED_WEB_IMAGE` in `.env`.
-
-Open:
+Then open:
 
 ```text
 http://<server-ip>:<HOST_PORT>
@@ -83,40 +96,47 @@ Example:
 http://127.0.0.1:8888
 ```
 
-## What Went Wrong In Your Attempt
+## Common Port Mistake
 
-Your public port change was correct in `ports`, but this line was the problem:
+A common mistake is changing `GATEWAY_PORT` to match the public port, for example:
 
 ```dotenv
 GATEWAY_PORT=8888
 ```
 
+This is usually wrong.
+
 Why it breaks:
 
-- `8888:80` already makes the app reachable from the host on port `8888`
-- `GATEWAY_PORT` changes the backend listener inside the container
-- the web entrypoint proxies `/api/*` to the gateway inside the container
-- changing the internal port without matching proxy behavior causes the UI to load while backend requests fail
+- `ports: "${HOST_PORT}:80"` already exposes the app on your chosen public port.
+- `GATEWAY_PORT` changes where the backend listens inside the container.
+- the web entrypoint proxies `/api/*` to the internal gateway.
+- if the internal gateway port changes without updating the rest of the container wiring, the UI may load while backend requests fail.
 
-`FRONTEND_PORT=8081` is not needed for the Docker image. The image serves built frontend files directly through the web entrypoint.
+If you want the app to be reachable at `http://host:8888`, set:
+
+```dotenv
+HOST_PORT=8888
+GATEWAY_PORT=8080
+```
 
 ## Troubleshooting
 
-If the home page loads but opening a session fails:
+If the home page loads but creating or opening a session fails:
 
-1. Check `docker compose logs -f`.
-2. Make sure `.env` keeps `GATEWAY_PORT=8080` unless you intentionally changed the image internals.
-3. Make sure your browser opens `http://<server-ip>:<HOST_PORT>`.
-4. Confirm the SSH key mount path exists on the host.
+1. Run `docker compose logs -f`.
+2. Make sure `GATEWAY_PORT=8080` unless you intentionally changed the image internals.
+3. Make sure you are opening `http://<server-ip>:<HOST_PORT>`.
+4. Confirm that `ZED_WEB_SSH_PATH` exists on the host and contains the expected SSH keys.
 
-If port `8888` is already in use:
+If the selected host port is already in use:
 
 1. Pick another `HOST_PORT`, such as `8899`.
-2. Restart with `docker compose up -d`.
+2. Restart the service with `docker compose up -d`.
 
-## Source Build Instead Of GHCR
+## Source Build Instead of GHCR
 
-If you are deploying from a local checkout instead of pulling `ghcr.io/un4gt/zed-web:latest`, replace the start step with:
+If you prefer to build from a local checkout instead of using `ghcr.io/un4gt/zed-web:latest`, run:
 
 ```bash
 docker compose build
