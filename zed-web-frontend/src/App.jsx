@@ -169,7 +169,7 @@ function App() {
       appendStatus(`Connected to ${payload.session.target}.`);
       await loadTree(payload.session.id);
     } catch (error) {
-      appendStatus(`Failed to open session: ${String(error)}`);
+      appendStatus(`Failed to open session: ${formatSessionOpenError(error, gatewayUrl)}`);
       setConnectionState('disconnected');
     } finally {
       setIsOpeningSession(false);
@@ -713,12 +713,30 @@ function TerminalView({ session, gatewayUrl, onStatusChange, onLog }) {
 }
 
 function getDefaultGatewayUrl() {
+function formatSessionOpenError(error, gatewayUrl) {
+  const message = String(error);
+  if (typeof window === 'undefined' || !(error instanceof TypeError) || error.message !== 'Failed to fetch') {
+    return message;
+  }
+
+  try {
+    const gateway = new URL(gatewayUrl, window.location.origin);
+    if (isLoopbackHost(gateway.hostname) && !isLoopbackHost(window.location.hostname)) {
+      return `${message}. Gateway URL ${gateway.origin} points to the browser host. Try ${window.location.origin}.`;
+    }
+  } catch {
+    return message;
+  }
+
+  return message;
+}
+
   if (typeof window === 'undefined') {
     return FALLBACK_GATEWAY_URL;
   }
 
   const { hostname, origin, port, protocol } = window.location;
-  if (port === '8081' && (hostname === '127.0.0.1' || hostname === 'localhost')) {
+  if (port === '8081') {
     return `${protocol}//${hostname}:8080`;
   }
 
@@ -726,6 +744,10 @@ function getDefaultGatewayUrl() {
 }
 
 function createBufferRuntime() {
+function isLoopbackHost(hostname) {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
   const contents = new Map();
   const savedContents = new Map();
 
