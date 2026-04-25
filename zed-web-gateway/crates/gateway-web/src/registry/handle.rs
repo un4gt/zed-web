@@ -2,20 +2,20 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gateway_core::api::{
-    CreateSessionRequest, FileResponse, RemoteServerUpdateMode, SaveFileRequest,
-    SaveFileResponse, SessionSnapshot, TreeResponse,
+    CreateSessionRequest, FileResponse, RemoteServerUpdateMode, SaveFileRequest, SaveFileResponse,
+    SessionSnapshot, TreeResponse,
 };
 use gateway_core::error::SessionError;
 use gateway_core::events::GatewayEvent;
 use gateway_core::session::{ConnectionState, ProxyState};
 use gateway_core::ssh::SshTarget;
 use gateway_ssh::proxy::spawn_proxy;
-use gateway_ssh::terminal::{open_terminal, TerminalProcess};
+use gateway_ssh::terminal::{TerminalProcess, open_terminal};
 use gateway_ssh::transport;
 use gateway_zed_proxy::client::ZedProxyClient;
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -30,6 +30,19 @@ pub struct SessionHandle {
     inner: RwLock<SessionState>,
     proxy: Mutex<Option<Child>>,
     zed_client: Mutex<Option<ZedProxyClient>>,
+}
+
+fn with_stage(stage: &'static str, error: SessionError) -> SessionError {
+    match error {
+        SessionError::InvalidRequest(message) => {
+            SessionError::InvalidRequest(format!("{stage}: {message}"))
+        }
+        SessionError::SshCommand(message) => {
+            SessionError::SshCommand(format!("{stage}: {message}"))
+        }
+        SessionError::Decode(message) => SessionError::Decode(format!("{stage}: {message}")),
+        other => other,
+    }
 }
 
 struct SessionState {
@@ -72,7 +85,11 @@ impl SessionHandle {
             .managed_data_dir
             .clone()
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var("ZED_WEB_DATA_DIR").ok().map(std::path::PathBuf::from))
+            .or_else(|| {
+                std::env::var("ZED_WEB_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+            })
             .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/zed-web"));
         let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
@@ -152,9 +169,13 @@ impl SessionHandle {
         Ok(self.snapshot().await)
     }
 
-    pub async fn list_directory(&self, requested_path: Option<String>) -> Result<TreeResponse, SessionError> {
+    pub async fn list_directory(
+        &self,
+        requested_path: Option<String>,
+    ) -> Result<TreeResponse, SessionError> {
         let (target, project_path) = self.target_and_path().await;
-        let tree = transport::list_directory(&target, &project_path, requested_path.as_deref()).await?;
+        let tree =
+            transport::list_directory(&target, &project_path, requested_path.as_deref()).await?;
         self.touch_heartbeat().await;
         Ok(tree)
     }
@@ -165,7 +186,10 @@ impl SessionHandle {
         Ok(file)
     }
 
-    pub async fn save_file(&self, request: SaveFileRequest) -> Result<SaveFileResponse, SessionError> {
+    pub async fn save_file(
+        &self,
+        request: SaveFileRequest,
+    ) -> Result<SaveFileResponse, SessionError> {
         let response = self.save_file_via_proxy(request).await?;
         self.touch_heartbeat().await;
 
@@ -179,7 +203,10 @@ impl SessionHandle {
         Ok(response)
     }
 
-    pub async fn open_terminal(&self, cwd: Option<String>) -> Result<TerminalProcess, SessionError> {
+    pub async fn open_terminal(
+        &self,
+        cwd: Option<String>,
+    ) -> Result<TerminalProcess, SessionError> {
         let (target, project_path) = self.target_and_path().await;
         let terminal = open_terminal(&target, &project_path, cwd.as_deref()).await?;
         self.touch_heartbeat().await;
@@ -219,21 +246,21 @@ impl SessionHandle {
             &managed_data_dir,
             managed_remote_exec.as_deref(),
         )
-        .await?;
+        .await
+        .map_err(|error| with_stage("prepare_managed_remote_binary", error))?;
 
-        let version = transport::probe_remote(
-            &target,
-            &project_path,
-            &managed_binary.remote_binary_path,
-        )
-        .await?;
+        let version =
+            transport::probe_remote(&target, &project_path, &managed_binary.remote_binary_path)
+                .await
+                .map_err(|error| with_stage("probe_remote", error))?;
         let proxy = spawn_proxy(
             &target,
             &managed_binary.remote_binary_path,
             &identifier,
             reconnect,
         )
-        .await?;
+        .await
+        .map_err(|error| with_stage("spawn_proxy", error))?;
         let gateway_ssh::proxy::ProxyProcess {
             child,
             mut stderr,
@@ -242,18 +269,25 @@ impl SessionHandle {
         } = proxy;
         let zed_client = ZedProxyClient::new(Box::new(stdout), Box::new(stdin));
         if let Err(error) = zed_client.initialize().await {
+            let error = with_stage("zed_proxy.initialize", error);
             let mut stderr_buffer = String::new();
             let _ = stderr.read_to_string(&mut stderr_buffer).await;
             if !stderr_buffer.trim().is_empty() {
-                return Err(SessionError::SshCommand(format!(
-                    "{}; proxy stderr: {}",
-                    error,
-                    stderr_buffer.trim()
-                )));
+                let stderr_trimmed = stderr_buffer.trim();
+                let message = match &error {
+                    SessionError::SshCommand(message) => {
+                        format!("{message}; proxy stderr: {stderr_trimmed}")
+                    }
+                    _ => format!("{error}; proxy stderr: {stderr_trimmed}"),
+                };
+                return Err(SessionError::SshCommand(message));
             }
             return Err(error);
         }
-        let worktree = zed_client.add_worktree(&project_path).await?;
+        let worktree = zed_client
+            .add_worktree(&project_path)
+            .await
+            .map_err(|error| with_stage("zed_proxy.add_worktree", error))?;
 
         {
             let mut slot = self.proxy.lock().await;
@@ -353,7 +387,10 @@ impl SessionHandle {
         )
     }
 
-    async fn read_file_via_proxy(&self, requested_path: &str) -> Result<FileResponse, SessionError> {
+    async fn read_file_via_proxy(
+        &self,
+        requested_path: &str,
+    ) -> Result<FileResponse, SessionError> {
         let worktree_id = self
             .inner
             .read()
@@ -364,7 +401,9 @@ impl SessionHandle {
         let client = client_slot
             .as_mut()
             .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
-        let buffer = client.open_buffer_by_path(worktree_id, requested_path).await?;
+        let buffer = client
+            .open_buffer_by_path(worktree_id, requested_path)
+            .await?;
         Ok(FileResponse {
             path: buffer
                 .file
@@ -376,7 +415,10 @@ impl SessionHandle {
         })
     }
 
-    async fn save_file_via_proxy(&self, request: SaveFileRequest) -> Result<SaveFileResponse, SessionError> {
+    async fn save_file_via_proxy(
+        &self,
+        request: SaveFileRequest,
+    ) -> Result<SaveFileResponse, SessionError> {
         let worktree_id = self
             .inner
             .read()
@@ -387,7 +429,9 @@ impl SessionHandle {
         let client = client_slot
             .as_mut()
             .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
-        let buffer = client.open_buffer_by_path(worktree_id, &request.path).await?;
+        let buffer = client
+            .open_buffer_by_path(worktree_id, &request.path)
+            .await?;
         client.overwrite_and_save(&buffer, &request.content).await?;
         Ok(SaveFileResponse {
             path: request.path,
@@ -413,7 +457,9 @@ fn validate_request(request: &CreateSessionRequest) -> Result<(), SessionError> 
     }
 
     if request.project_path.trim().is_empty() {
-        return Err(SessionError::InvalidRequest("project_path is required".into()));
+        return Err(SessionError::InvalidRequest(
+            "project_path is required".into(),
+        ));
     }
 
     Ok(())

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use gateway_core::error::SessionError;
@@ -5,8 +6,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::messages::{
-    self, AddWorktree, AddWorktreeResponse, BufferSaved, Envelope, OpenBufferByPath,
-    OpenBufferResponse, SaveBuffer, UpdateBuffer,
+    self, AddWorktree, AddWorktreeResponse, AllocateWorktreeIdResponse, BufferSaved, Envelope,
+    OpenBufferByPath, OpenBufferResponse, SaveBuffer, UpdateBuffer,
 };
 use prost::Message;
 
@@ -20,9 +21,11 @@ pub struct ZedProxyClient {
 
 struct ClientState {
     next_message_id: u32,
+    next_worktree_id: u64,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
     reader: Box<dyn AsyncRead + Send + Unpin>,
     max_received: u32,
+    buffered_outgoing: VecDeque<Envelope>,
 }
 
 pub struct OpenedBuffer {
@@ -40,9 +43,11 @@ impl ZedProxyClient {
         Self {
             state: Arc::new(Mutex::new(ClientState {
                 next_message_id: 1,
+                next_worktree_id: 1,
                 writer,
                 reader,
                 max_received: 0,
+                buffered_outgoing: VecDeque::new(),
             })),
         }
     }
@@ -52,16 +57,23 @@ impl ZedProxyClient {
         loop {
             let envelope = self.read_envelope().await?;
             match envelope.payload {
+                Some(messages::envelope::Payload::Ack(_)) => {}
                 Some(messages::envelope::Payload::RemoteStarted(_)) => {
-                    self.send_ack(envelope.id).await?;
+                    self.send_special_ack(envelope.id).await?;
                     return Ok(());
                 }
                 Some(messages::envelope::Payload::FlushBufferedMessages(_)) => {
-                    self.respond(envelope.id, messages::FlushBufferedMessagesResponse {}).await?;
+                    self.replay_buffered_messages().await?;
+                    self.send_special_ack(envelope.id).await?;
                 }
-                _ => {}
+                _ => self.handle_unsolicited(envelope).await?,
             }
         }
+    }
+
+    pub async fn ping(&self) -> Result<(), SessionError> {
+        let _: messages::Ack = self.request(messages::Ping {}).await?;
+        Ok(())
     }
 
     pub async fn add_worktree(&self, path: &str) -> Result<AddWorktreeResponse, SessionError> {
@@ -77,7 +89,7 @@ impl ZedProxyClient {
     where
         T: IntoEnvelope,
     {
-        self.write_envelope(payload.into_envelope(0, None))
+        self.write_buffered_envelope(payload.into_envelope(0, None))
             .await
             .map(|_| ())
     }
@@ -190,6 +202,7 @@ impl ZedProxyClient {
             project_id: REMOTE_SERVER_PROJECT_ID,
             buffer_id: buffer.buffer_id,
             version: next_version,
+            new_path: None,
         })
         .await
     }
@@ -199,7 +212,9 @@ impl ZedProxyClient {
         T: IntoEnvelope,
         R: FromEnvelope,
     {
-        let message_id = self.write_envelope(payload.into_envelope(0, None)).await?;
+        let message_id = self
+            .write_buffered_envelope(payload.into_envelope(0, None))
+            .await?;
 
         loop {
             let envelope = self.read_envelope().await?;
@@ -212,9 +227,20 @@ impl ZedProxyClient {
 
     async fn handle_unsolicited(&self, envelope: Envelope) -> Result<(), SessionError> {
         match envelope.payload {
-            Some(messages::envelope::Payload::FlushBufferedMessages(_)) => {
-                self.respond(envelope.id, messages::FlushBufferedMessagesResponse {})
+            Some(messages::envelope::Payload::AllocateWorktreeId(_)) => {
+                let worktree_id = {
+                    let mut state = self.state.lock().await;
+                    let worktree_id = state.next_worktree_id;
+                    state.next_worktree_id += 1;
+                    worktree_id
+                };
+                self.respond(envelope.id, AllocateWorktreeIdResponse { worktree_id })
                     .await
+            }
+            Some(messages::envelope::Payload::Ping(_)) => self.send_ack(envelope.id).await,
+            Some(messages::envelope::Payload::FlushBufferedMessages(_)) => {
+                self.replay_buffered_messages().await?;
+                self.send_special_ack(envelope.id).await
             }
             _ => self.ack_if_needed(&envelope).await,
         }
@@ -228,7 +254,11 @@ impl ZedProxyClient {
     }
 
     async fn send_ack(&self, responding_to: u32) -> Result<(), SessionError> {
-        self.write_envelope(messages::Ack {}.into_envelope(0, Some(responding_to)))
+        self.respond(responding_to, messages::Ack {}).await
+    }
+
+    async fn send_special_ack(&self, responding_to: u32) -> Result<(), SessionError> {
+        self.write_unbuffered_envelope(messages::Ack {}.into_envelope(0, Some(responding_to)))
             .await
             .map(|_| ())
     }
@@ -237,29 +267,45 @@ impl ZedProxyClient {
     where
         T: IntoEnvelope,
     {
-        self.write_envelope(payload.into_envelope(0, Some(responding_to)))
+        self.write_buffered_envelope(payload.into_envelope(0, Some(responding_to)))
             .await
             .map(|_| ())
     }
 
-    async fn write_envelope(&self, mut envelope: Envelope) -> Result<u32, SessionError> {
+    async fn write_buffered_envelope(&self, mut envelope: Envelope) -> Result<u32, SessionError> {
         let mut state = self.state.lock().await;
-        let message_id = state.next_message_id;
-        state.next_message_id += 1;
-        envelope.id = message_id;
-        envelope.ack_id = Some(state.max_received);
+        assign_outgoing_metadata(&mut state, &mut envelope);
+        let message_id = envelope.id;
+        state.buffered_outgoing.push_back(envelope.clone());
 
-        let mut buffer = Vec::new();
-        envelope
-            .encode(&mut buffer)
-            .map_err(|error| SessionError::Decode(error.to_string()))?;
-        state
-            .writer
-            .write_all(&(buffer.len() as u32).to_le_bytes())
-            .await?;
-        state.writer.write_all(&buffer).await?;
-        state.writer.flush().await?;
+        write_encoded_envelope(state.writer.as_mut(), &envelope).await?;
         Ok(message_id)
+    }
+
+    async fn write_unbuffered_envelope(&self, mut envelope: Envelope) -> Result<u32, SessionError> {
+        let mut state = self.state.lock().await;
+        assign_outgoing_metadata(&mut state, &mut envelope);
+        let message_id = envelope.id;
+
+        write_encoded_envelope(state.writer.as_mut(), &envelope).await?;
+        Ok(message_id)
+    }
+
+    async fn replay_buffered_messages(&self) -> Result<(), SessionError> {
+        let buffered_messages = {
+            let state = self.state.lock().await;
+            state.buffered_outgoing.iter().cloned().collect::<Vec<_>>()
+        };
+
+        if buffered_messages.is_empty() {
+            return Ok(());
+        }
+
+        let mut state = self.state.lock().await;
+        for envelope in &buffered_messages {
+            write_encoded_envelope(state.writer.as_mut(), envelope).await?;
+        }
+        Ok(())
     }
 
     async fn read_envelope(&self) -> Result<Envelope, SessionError> {
@@ -271,7 +317,21 @@ impl ZedProxyClient {
         state.reader.read_exact(&mut buffer).await?;
         let envelope = Envelope::decode(buffer.as_slice())
             .map_err(|error| SessionError::Decode(error.to_string()))?;
-        state.max_received = envelope.id;
+
+        if let Some(ack_id) = envelope.ack_id {
+            while state
+                .buffered_outgoing
+                .front()
+                .is_some_and(|buffered_envelope| buffered_envelope.id <= ack_id)
+            {
+                state.buffered_outgoing.pop_front();
+            }
+        }
+
+        if should_track_received(&envelope) {
+            state.max_received = envelope.id;
+        }
+
         Ok(envelope)
     }
 }
@@ -300,12 +360,20 @@ macro_rules! impl_envelope_message {
 
         impl FromEnvelope for $type {
             fn from_envelope(envelope: Envelope) -> Result<Self, SessionError> {
+                let actual_payload = envelope
+                    .payload
+                    .as_ref()
+                    .map(payload_name)
+                    .unwrap_or("None");
                 match envelope.payload {
                     Some(messages::envelope::Payload::$variant(message)) => Ok(message),
                     Some(messages::envelope::Payload::Error(error)) => {
                         Err(SessionError::SshCommand(error.message))
                     }
-                    _ => Err(SessionError::Decode("unexpected response envelope".into())),
+                    _ => Err(SessionError::Decode(format!(
+                        "unexpected response envelope: expected {}, got {actual_payload}",
+                        stringify!($variant),
+                    ))),
                 }
             }
         }
@@ -314,15 +382,97 @@ macro_rules! impl_envelope_message {
 
 impl_envelope_message!(messages::RemoteStarted, RemoteStarted);
 impl_envelope_message!(messages::Ack, Ack);
-impl_envelope_message!(messages::FlushBufferedMessagesResponse, FlushBufferedMessagesResponse);
+impl_envelope_message!(messages::Ping, Ping);
+impl_envelope_message!(
+    messages::FlushBufferedMessagesResponse,
+    FlushBufferedMessagesResponse
+);
 impl_envelope_message!(AddWorktree, AddWorktree);
 impl_envelope_message!(AddWorktreeResponse, AddWorktreeResponse);
+impl_envelope_message!(
+    messages::AllocateWorktreeIdResponse,
+    AllocateWorktreeIdResponse
+);
 impl_envelope_message!(OpenBufferByPath, OpenBufferByPath);
 impl_envelope_message!(OpenBufferResponse, OpenBufferResponse);
 impl_envelope_message!(messages::CreateBufferForPeer, CreateBufferForPeer);
 impl_envelope_message!(UpdateBuffer, UpdateBuffer);
 impl_envelope_message!(SaveBuffer, SaveBuffer);
 impl_envelope_message!(BufferSaved, BufferSaved);
+
+impl IntoEnvelope for messages::FlushBufferedMessages {
+    fn into_envelope(self, id: u32, responding_to: Option<u32>) -> Envelope {
+        Envelope {
+            id,
+            responding_to,
+            original_sender_id: None,
+            ack_id: None,
+            payload: Some(messages::envelope::Payload::FlushBufferedMessages(self)),
+        }
+    }
+}
+
+fn payload_name(payload: &messages::envelope::Payload) -> &'static str {
+    match payload {
+        messages::envelope::Payload::Ack(_) => "Ack",
+        messages::envelope::Payload::Error(_) => "Error",
+        messages::envelope::Payload::UpdateWorktree(_) => "UpdateWorktree",
+        messages::envelope::Payload::OpenBufferByPath(_) => "OpenBufferByPath",
+        messages::envelope::Payload::OpenBufferResponse(_) => "OpenBufferResponse",
+        messages::envelope::Payload::CreateBufferForPeer(_) => "CreateBufferForPeer",
+        messages::envelope::Payload::UpdateBuffer(_) => "UpdateBuffer",
+        messages::envelope::Payload::UpdateBufferFile(_) => "UpdateBufferFile",
+        messages::envelope::Payload::SaveBuffer(_) => "SaveBuffer",
+        messages::envelope::Payload::BufferSaved(_) => "BufferSaved",
+        messages::envelope::Payload::BufferReloaded(_) => "BufferReloaded",
+        messages::envelope::Payload::SynchronizeBuffers(_) => "SynchronizeBuffers",
+        messages::envelope::Payload::SynchronizeBuffersResponse(_) => "SynchronizeBuffersResponse",
+        messages::envelope::Payload::RejoinRemoteProjects(_) => "RejoinRemoteProjects",
+        messages::envelope::Payload::RejoinRemoteProjectsResponse(_) => {
+            "RejoinRemoteProjectsResponse"
+        }
+        messages::envelope::Payload::Ping(_) => "Ping",
+        messages::envelope::Payload::AddWorktree(_) => "AddWorktree",
+        messages::envelope::Payload::AddWorktreeResponse(_) => "AddWorktreeResponse",
+        messages::envelope::Payload::FlushBufferedMessages(_) => "FlushBufferedMessages",
+        messages::envelope::Payload::FlushBufferedMessagesResponse(_) => {
+            "FlushBufferedMessagesResponse"
+        }
+        messages::envelope::Payload::RemoteStarted(_) => "RemoteStarted",
+        messages::envelope::Payload::AllocateWorktreeId(_) => "AllocateWorktreeId",
+        messages::envelope::Payload::AllocateWorktreeIdResponse(_) => "AllocateWorktreeIdResponse",
+    }
+}
+
+fn should_track_received(envelope: &Envelope) -> bool {
+    !matches!(
+        envelope.payload,
+        Some(messages::envelope::Payload::FlushBufferedMessages(_))
+            | Some(messages::envelope::Payload::RemoteStarted(_))
+    )
+}
+
+fn assign_outgoing_metadata(state: &mut ClientState, envelope: &mut Envelope) {
+    envelope.id = state.next_message_id;
+    state.next_message_id += 1;
+    envelope.ack_id = Some(state.max_received);
+}
+
+async fn write_encoded_envelope(
+    writer: &mut (dyn AsyncWrite + Send + Unpin),
+    envelope: &Envelope,
+) -> Result<(), SessionError> {
+    let mut buffer = Vec::new();
+    envelope
+        .encode(&mut buffer)
+        .map_err(|error| SessionError::Decode(error.to_string()))?;
+    writer
+        .write_all(&(buffer.len() as u32).to_le_bytes())
+        .await?;
+    writer.write_all(&buffer).await?;
+    writer.flush().await?;
+    Ok(())
+}
 
 fn apply_operations(
     base_text: &str,
@@ -363,7 +513,10 @@ fn increment_version(
     replica_id: u32,
 ) -> Vec<messages::VectorClockEntry> {
     let mut version = current_version.to_vec();
-    if let Some(entry) = version.iter_mut().find(|entry| entry.replica_id == replica_id) {
+    if let Some(entry) = version
+        .iter_mut()
+        .find(|entry| entry.replica_id == replica_id)
+    {
         entry.timestamp += 1;
     } else {
         version.push(messages::VectorClockEntry {
@@ -430,6 +583,7 @@ mod tests {
                 AddWorktreeResponse {
                     worktree_id: 9,
                     canonicalized_path: "/tmp/test".into(),
+                    root_repo_common_dir: None,
                 }
                 .into_envelope(2, Some(request.id)),
             )
@@ -508,7 +662,10 @@ mod tests {
         });
 
         client.initialize().await.expect("initialize proxy");
-        let worktree = client.add_worktree("/tmp/test").await.expect("add worktree");
+        let worktree = client
+            .add_worktree("/tmp/test")
+            .await
+            .expect("add worktree");
         let buffer = client
             .open_buffer_by_path(worktree.worktree_id, "hello.txt")
             .await
@@ -517,6 +674,305 @@ mod tests {
         assert_eq!(buffer.base_text, "hello world");
         assert_eq!(buffer.buffer_id, 11);
         server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn initialize_should_ack_flush_buffered_messages() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let request = read_envelope(&mut server_side).await;
+            assert!(matches!(
+                request.payload,
+                Some(messages::envelope::Payload::RemoteStarted(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(request.id), request.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::FlushBufferedMessages {}.into_envelope(3, None),
+            )
+            .await;
+
+            let flush_response = read_envelope(&mut server_side).await;
+            assert_eq!(flush_response.responding_to, Some(3));
+            assert!(matches!(
+                flush_response.payload,
+                Some(messages::envelope::Payload::Ack(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(4, None),
+            )
+            .await;
+
+            let remote_started_response = read_envelope(&mut server_side).await;
+            assert_eq!(remote_started_response.responding_to, Some(4));
+            assert!(matches!(
+                remote_started_response.payload,
+                Some(messages::envelope::Payload::Ack(_))
+            ));
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn add_worktree_replays_unacked_request_on_flush_buffered_messages() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let remote_started = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(remote_started.id), remote_started.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(3, None),
+            )
+            .await;
+
+            let remote_started_ack = read_envelope(&mut server_side).await;
+            assert_eq!(remote_started_ack.responding_to, Some(3));
+
+            let add_worktree_request = read_envelope(&mut server_side).await;
+            assert!(matches!(
+                add_worktree_request.payload,
+                Some(messages::envelope::Payload::AddWorktree(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                messages::FlushBufferedMessages {}.into_envelope(5, None),
+            )
+            .await;
+
+            let replayed_request = read_envelope(&mut server_side).await;
+            assert_eq!(replayed_request.id, add_worktree_request.id);
+            assert!(matches!(
+                replayed_request.payload,
+                Some(messages::envelope::Payload::AddWorktree(_))
+            ));
+
+            let flush_ack = read_envelope(&mut server_side).await;
+            assert_eq!(flush_ack.responding_to, Some(5));
+            assert!(matches!(
+                flush_ack.payload,
+                Some(messages::envelope::Payload::Ack(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                AddWorktreeResponse {
+                    worktree_id: 9,
+                    canonicalized_path: "/tmp/test".into(),
+                    root_repo_common_dir: None,
+                }
+                .into_envelope(6, Some(add_worktree_request.id)),
+            )
+            .await;
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        let worktree = client
+            .add_worktree("/tmp/test")
+            .await
+            .expect("add worktree");
+
+        assert_eq!(worktree.worktree_id, 9);
+        server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn ack_id_retires_buffered_messages_before_flush() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let remote_started = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(remote_started.id), remote_started.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(3, None),
+            )
+            .await;
+            let _remote_started_ack = read_envelope(&mut server_side).await;
+
+            let first_request = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                with_ack_id(
+                    AddWorktreeResponse {
+                        worktree_id: 9,
+                        canonicalized_path: "/tmp/first".into(),
+                        root_repo_common_dir: None,
+                    }
+                    .into_envelope(4, Some(first_request.id)),
+                    first_request.id,
+                ),
+            )
+            .await;
+
+            let second_request = read_envelope(&mut server_side).await;
+            assert!(matches!(
+                second_request.payload,
+                Some(messages::envelope::Payload::AddWorktree(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                messages::FlushBufferedMessages {}.into_envelope(6, None),
+            )
+            .await;
+
+            let replayed_request = read_envelope(&mut server_side).await;
+            assert_eq!(replayed_request.id, second_request.id);
+
+            let flush_ack = read_envelope(&mut server_side).await;
+            assert_eq!(flush_ack.responding_to, Some(6));
+
+            write_envelope(
+                &mut server_side,
+                AddWorktreeResponse {
+                    worktree_id: 10,
+                    canonicalized_path: "/tmp/second".into(),
+                    root_repo_common_dir: None,
+                }
+                .into_envelope(7, Some(second_request.id)),
+            )
+            .await;
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        let first_worktree = client
+            .add_worktree("/tmp/first")
+            .await
+            .expect("first worktree");
+        let second_worktree = client
+            .add_worktree("/tmp/second")
+            .await
+            .expect("second worktree");
+
+        assert_eq!(first_worktree.worktree_id, 9);
+        assert_eq!(second_worktree.worktree_id, 10);
+        server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn request_loop_acks_unsolicited_ping() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let remote_started = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(remote_started.id), remote_started.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(3, None),
+            )
+            .await;
+            let _remote_started_ack = read_envelope(&mut server_side).await;
+
+            let add_worktree_request = read_envelope(&mut server_side).await;
+
+            write_envelope(&mut server_side, messages::Ping {}.into_envelope(4, None)).await;
+
+            let ping_ack = read_envelope(&mut server_side).await;
+            assert_eq!(ping_ack.responding_to, Some(4));
+            assert!(matches!(
+                ping_ack.payload,
+                Some(messages::envelope::Payload::Ack(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                AddWorktreeResponse {
+                    worktree_id: 11,
+                    canonicalized_path: "/tmp/ping".into(),
+                    root_repo_common_dir: None,
+                }
+                .into_envelope(5, Some(add_worktree_request.id)),
+            )
+            .await;
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        let worktree = client
+            .add_worktree("/tmp/ping")
+            .await
+            .expect("add worktree");
+
+        assert_eq!(worktree.worktree_id, 11);
+        server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn client_ping_receives_ack() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let remote_started = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(remote_started.id), remote_started.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(3, None),
+            )
+            .await;
+            let _remote_started_ack = read_envelope(&mut server_side).await;
+
+            let ping_request = read_envelope(&mut server_side).await;
+            assert!(matches!(
+                ping_request.payload,
+                Some(messages::envelope::Payload::Ping(_))
+            ));
+
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(4, Some(ping_request.id), ping_request.id),
+            )
+            .await;
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        client.ping().await.expect("ping proxy");
+        server.await.expect("join fake server");
+    }
+
+    fn with_ack_id(mut envelope: Envelope, ack_id: u32) -> Envelope {
+        envelope.ack_id = Some(ack_id);
+        envelope
+    }
+
+    fn ack_with_ack_id(id: u32, responding_to: Option<u32>, ack_id: u32) -> Envelope {
+        with_ack_id(messages::Ack {}.into_envelope(id, responding_to), ack_id)
     }
 
     async fn write_envelope(stream: &mut (impl AsyncWrite + Unpin), envelope: Envelope) {

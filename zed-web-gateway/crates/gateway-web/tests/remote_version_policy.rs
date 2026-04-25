@@ -1,11 +1,14 @@
 use gateway_core::api::{RemoteServerPolicy, RemoteServerUpdateMode};
-use gateway_web::registry::{resolve_remote_server_policy, DEFAULT_ZED_RELEASE_VERSION};
+use gateway_web::registry::{DEFAULT_ZED_RELEASE_VERSION, resolve_remote_server_policy};
 
 #[test]
 fn latest_policy_should_default_to_current_release_version() {
     let resolved = resolve_remote_server_policy(None).expect("resolve latest policy");
     assert!(matches!(resolved.mode, RemoteServerUpdateMode::Latest));
-    assert_eq!(resolved.selected_version.as_deref(), Some(DEFAULT_ZED_RELEASE_VERSION));
+    assert_eq!(
+        resolved.selected_version.as_deref(),
+        Some(DEFAULT_ZED_RELEASE_VERSION)
+    );
 }
 
 #[test]

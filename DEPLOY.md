@@ -1,17 +1,28 @@
-# Zed Web Docker Deployment
+# Zed Web Deployment
 
-## Recommended Deployment
+This deployment runs Zed Web as one container:
 
-Use the published GHCR image unless you need to build the project from source. This is the simplest and recommended way to deploy Zed Web.
+- Caddy serves the built React frontend on container port `80`.
+- Caddy proxies `/api/*` and websocket routes to `gateway-server`.
+- `gateway-server` listens only inside the container on `127.0.0.1:${GATEWAY_PORT}`.
+- The gateway opens outbound SSH connections to the target machine.
 
-## Required Files
+The browser should only open the public web entrypoint:
 
-Keep these files together:
+```text
+http://<server-ip>:<HOST_PORT>
+```
+
+Do not open the internal gateway port directly in normal Docker deployments.
+
+## Files
+
+Keep these files together on the deployment host:
 
 - `docker-compose.yml`
 - `.env.example`
 
-Initialize your local configuration:
+Create local configuration and persistent runtime storage:
 
 ```bash
 cp .env.example .env
@@ -20,125 +31,260 @@ mkdir -p data
 
 ## Port Model
 
-This setup uses two different kinds of ports:
+There are two ports with different jobs:
 
-- `HOST_PORT`: the public port exposed on the Docker host, for example `8888`
-- `GATEWAY_PORT`: the internal port used by the gateway process inside the container
+- `HOST_PORT`: the public port on the Docker host.
+- `GATEWAY_PORT`: the private port used by `gateway-server` inside the container.
 
-Use them differently:
+Recommended values:
 
-- Change `HOST_PORT` when you want the app to listen on a different host port.
-- Do not change `GATEWAY_PORT` just to move the public entrypoint.
-- Leave `GATEWAY_PORT` at `8080` unless you are intentionally changing the container internals.
+```dotenv
+HOST_PORT=8080
+GATEWAY_HOST=127.0.0.1
+GATEWAY_PORT=8080
+```
 
-## Example `.env`
+Why `GATEWAY_HOST=127.0.0.1`:
 
-This is a working example for the published image:
+- Caddy and `gateway-server` run in the same container.
+- Caddy proxies `/api/*` to `127.0.0.1:${GATEWAY_PORT}`.
+- The backend does not need to be exposed separately on the container network.
+
+If you want the app reachable at `http://host:8888`, change only:
+
+```dotenv
+HOST_PORT=8888
+```
+
+Leave `GATEWAY_PORT=8080` unless you are intentionally changing container internals.
+
+## Environment
+
+Example `.env`:
 
 ```dotenv
 ZED_WEB_IMAGE=ghcr.io/un4gt/zed-web:latest
-HOST_PORT=8888
-GATEWAY_HOST=0.0.0.0
+HOST_PORT=8080
+GATEWAY_HOST=127.0.0.1
 GATEWAY_PORT=8080
-FRONTEND_PORT=8081
 ZED_WEB_DATA_PATH=./data
 ZED_WEB_SSH_PATH=${HOME}/.ssh
 ```
 
-Notes:
+Variables:
 
-- `ZED_WEB_IMAGE` lets you choose the image without editing `docker-compose.yml`.
-- `FRONTEND_PORT` can stay at its default value in Docker deployments. The published image serves the built frontend through the web entrypoint and does not need a separate frontend preview port.
+- `ZED_WEB_IMAGE`: image used by Compose.
+- `HOST_PORT`: public HTTP port on the Docker host.
+- `GATEWAY_HOST`: internal gateway bind address. Use `127.0.0.1` for the bundled image.
+- `GATEWAY_PORT`: internal gateway port. Default `8080`.
+- `ZED_WEB_DATA_PATH`: host directory for managed remote-server cache and runtime data.
+- `ZED_WEB_SSH_PATH`: host SSH config/key directory mounted read-only at `/root/.ssh`.
 
-## Example `docker-compose.yml`
+`FRONTEND_PORT` is not used by the Docker image. It only applies to the bare local preview scripts.
 
-The repository compose file supports both source builds and published images:
+## Start From Published Image
 
-```yaml
-services:
-  zed-web:
-    image: ${ZED_WEB_IMAGE:-ghcr.io/un4gt/zed-web:latest}
-    container_name: zed-web
-    restart: unless-stopped
-    ports:
-      - "${HOST_PORT:-8080}:80"
-    environment:
-      GATEWAY_HOST: ${GATEWAY_HOST:-0.0.0.0}
-      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
-      FRONTEND_PORT: ${FRONTEND_PORT:-8081}
-      ZED_WEB_DATA_DIR: /var/lib/zed-web
-      SSH_AUTH_SOCK: /ssh-agent
-    volumes:
-      - ${ZED_WEB_DATA_PATH:-./data}:/var/lib/zed-web
-      - ${ZED_WEB_SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
-
-## Start the Service
-
-For the published image:
+Use the published image:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-Then open:
+Check status:
+
+```bash
+docker compose ps
+docker compose logs -f zed-web
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080
+```
+
+or, if you changed `HOST_PORT`:
 
 ```text
 http://<server-ip>:<HOST_PORT>
 ```
 
-Example:
+## Build From Source
+
+Use this when deploying local code changes:
+
+```bash
+docker compose build zed-web
+docker compose up -d zed-web
+```
+
+Force a clean rebuild when dependency or Dockerfile changes are involved:
+
+```bash
+docker compose build --no-cache zed-web
+docker compose up -d zed-web
+```
+
+Verify the new backend is active:
+
+```bash
+curl -fsS http://127.0.0.1:${HOST_PORT:-8080}/api/health
+```
+
+Expected response:
+
+```json
+{"ok":true}
+```
+
+The gateway should return JSON errors, not HTML or plain text. For example:
+
+```bash
+curl -i -X POST "http://127.0.0.1:${HOST_PORT:-8080}/api/sessions" \
+  -H "Content-Type: application/json" \
+  -d '{"host":"","project_path":"/tmp","remote_server":{"mode":"disabled"}}'
+```
+
+Expected shape:
+
+```json
+{"error":"host is required"}
+```
+
+## Web Connection Settings
+
+When using the Docker deployment page, leave `Gateway URL` as the same origin unless you are intentionally connecting to another gateway:
 
 ```text
-http://127.0.0.1:8888
+http://<server-ip>:<HOST_PORT>
 ```
 
-## Common Port Mistake
+For local source preview on Rsbuild port `4173`, the UI defaults the gateway to:
 
-A common mistake is changing `GATEWAY_PORT` to match the public port, for example:
-
-```dotenv
-GATEWAY_PORT=8888
+```text
+http://127.0.0.1:8080
 ```
 
-This is usually wrong.
+Use these SSH host values depending on where the gateway container should connect:
 
-Why it breaks:
+- Connect to the Docker host: `host.docker.internal`
+- Connect to another machine: that machine's DNS name or IP address
+- Connect to an SSH server running inside another container: use its Compose service name on a shared Docker network
 
-- `ports: "${HOST_PORT}:80"` already exposes the app on your chosen public port.
-- `GATEWAY_PORT` changes where the backend listens inside the container.
-- the web entrypoint proxies `/api/*` to the internal gateway.
-- if the internal gateway port changes without updating the rest of the container wiring, the UI may load while backend requests fail.
+Example for connecting from the container to the Docker host as root:
 
-If you want the app to be reachable at `http://host:8888`, set:
-
-```dotenv
-HOST_PORT=8888
-GATEWAY_PORT=8080
+```text
+Gateway URL: http://127.0.0.1:8080
+SSH host: host.docker.internal
+SSH user: root
+Project path: /tmp
+Server: Latest
 ```
+
+The mounted SSH directory must contain keys and config that let the container's root user authenticate to the target host.
+
+## SSH Requirements
+
+The container includes `openssh-client`; it does not run an SSH server.
+
+The target host must have:
+
+- SSH reachable from the container.
+- The requested SSH user allowed to log in.
+- The requested `Project path` readable by that user.
+- Write permissions if you want to save edited files.
+
+For key-based authentication, keep the key material under `ZED_WEB_SSH_PATH` on the Docker host. It is mounted read-only:
+
+```yaml
+- ${ZED_WEB_SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
+```
+
+If you use an SSH agent, Compose also mounts the host agent socket to `/ssh-agent` when `SSH_AUTH_SOCK` is set.
+
+## Remote Server Policy
+
+The open-project form supports:
+
+- `Latest`: use the default managed Zed remote-server release.
+- `Pinned`: use a specific release tag, such as `v0.232.3`.
+- `Disabled`: skip managed updates and use the configured remote binary path directly.
+
+Managed remote-server files are cached under:
+
+```text
+/var/lib/zed-web
+```
+
+In Compose this maps to:
+
+```text
+${ZED_WEB_DATA_PATH:-./data}
+```
+
+## Validate The Edit Flow
+
+After the container is running:
+
+1. Open `http://<server-ip>:<HOST_PORT>`.
+2. Confirm `Gateway URL` points to the public web entrypoint.
+3. Enter SSH host, user, port, and project path.
+4. Click `Open`.
+5. Open a file from the project tree.
+6. Edit the file.
+7. Click `Save`.
+8. Confirm the file changed on the target host.
+
+The first screen does not open the terminal by default. Use the terminal activity button only when you want to attach one.
 
 ## Troubleshooting
 
-If the home page loads but creating or opening a session fails:
+If the page loads but `Open` fails with HTML or JSON parse errors:
 
-1. Run `docker compose logs -f`.
-2. Make sure `GATEWAY_PORT=8080` unless you intentionally changed the image internals.
-3. Make sure you are opening `http://<server-ip>:<HOST_PORT>`.
-4. Confirm that `ZED_WEB_SSH_PATH` exists on the host and contains the expected SSH keys.
+- Rebuild and restart the container after code changes:
+
+```bash
+docker compose build zed-web
+docker compose up -d zed-web
+```
+
+- Confirm `/api/health` goes through the same public URL as the frontend:
+
+```bash
+curl -i http://127.0.0.1:${HOST_PORT:-8080}/api/health
+```
+
+- Confirm Caddy is serving the frontend and proxying `/api/*`:
+
+```bash
+docker compose logs -f zed-web
+```
+
+If SSH connection fails:
+
+- Check that `ZED_WEB_SSH_PATH` exists on the host.
+- Check key permissions and known hosts.
+- From inside the container, test SSH manually:
+
+```bash
+docker compose exec zed-web ssh root@host.docker.internal
+```
 
 If the selected host port is already in use:
 
-1. Pick another `HOST_PORT`, such as `8899`.
-2. Restart the service with `docker compose up -d`.
+```dotenv
+HOST_PORT=8899
+```
 
-## Source Build Instead of GHCR
-
-If you prefer to build from a local checkout instead of using `ghcr.io/un4gt/zed-web:latest`, run:
+Then restart:
 
 ```bash
-docker compose build
 docker compose up -d
 ```
+
+If edited files do not save:
+
+- Verify the SSH user can write to the selected project path.
+- Check `docker compose logs -f zed-web` for gateway errors.
+- Confirm the frontend is using the Docker web entrypoint, not an old Rsbuild preview URL.

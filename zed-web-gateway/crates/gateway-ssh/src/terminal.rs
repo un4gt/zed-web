@@ -2,7 +2,7 @@ use std::process::Stdio;
 
 use gateway_core::error::SessionError;
 use gateway_core::session::resolve_remote_path;
-use gateway_core::ssh::{shell_escape, SshTarget};
+use gateway_core::ssh::{SshTarget, shell_escape};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 

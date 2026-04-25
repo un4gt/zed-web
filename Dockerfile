@@ -8,15 +8,15 @@ RUN bun run build
 FROM rust:1.94-bookworm AS gateway-builder
 WORKDIR /app/zed-web-gateway
 COPY zed-web-gateway/Cargo.toml ./
+COPY zed-web-gateway/Cargo.lock ./
 COPY zed-web-gateway/crates ./crates
-RUN cargo build --release -p gateway-server
+RUN cargo build --release --locked -p gateway-server
 
 FROM caddy:2 AS caddy-runtime
 
 FROM debian:bookworm-slim AS runtime
-ENV GATEWAY_HOST=0.0.0.0
+ENV GATEWAY_HOST=127.0.0.1
 ENV GATEWAY_PORT=8080
-ENV FRONTEND_PORT=8081
 ENV ZED_WEB_DATA_DIR=/var/lib/zed-web
 
 RUN apt-get update \
@@ -32,7 +32,10 @@ COPY deploy/start-container.sh /opt/zed-web/bin/start-container.sh
 
 RUN chmod +x /opt/zed-web/bin/gateway-server /opt/zed-web/bin/start-container.sh
 
-EXPOSE 8080 8081 80
+EXPOSE 80
 VOLUME ["/var/lib/zed-web"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1/api/health >/dev/null || exit 1
 
 ENTRYPOINT ["/opt/zed-web/bin/start-container.sh"]

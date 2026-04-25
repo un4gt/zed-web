@@ -1,12 +1,14 @@
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use std::path::Path;
 
 use base64::Engine;
-use gateway_core::api::{DirectoryEntry, EntryKind, FileResponse, SaveFileRequest, SaveFileResponse, TreeResponse};
+use gateway_core::api::{
+    DirectoryEntry, EntryKind, FileResponse, SaveFileRequest, SaveFileResponse, TreeResponse,
+};
 use gateway_core::error::SessionError;
 use gateway_core::session::{normalize_child_path, resolve_remote_path};
-use gateway_core::ssh::{shell_escape, SshTarget};
+use gateway_core::ssh::{SshTarget, shell_escape};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -27,7 +29,10 @@ pub async fn probe_remote(
     run_ssh_capture(target, &command).await
 }
 
-pub async fn reconnect_probe(target: &SshTarget, project_path: &str) -> Result<String, SessionError> {
+pub async fn reconnect_probe(
+    target: &SshTarget,
+    project_path: &str,
+) -> Result<String, SessionError> {
     let command = format!(
         "sh -lc 'test -d {path} && printf ready || printf missing'",
         path = shell_escape(project_path)
@@ -84,7 +89,11 @@ pub async fn read_file(
         .map_err(|error| SessionError::Decode(format!("failed to decode file payload: {error}")))?;
 
     let truncated = bytes.len() > MAX_FILE_BYTES;
-    let slice = if truncated { &bytes[..MAX_FILE_BYTES] } else { &bytes };
+    let slice = if truncated {
+        &bytes[..MAX_FILE_BYTES]
+    } else {
+        &bytes
+    };
     let content = String::from_utf8(slice.to_vec())?;
 
     Ok(FileResponse {
@@ -120,7 +129,10 @@ pub async fn save_file(
     })
 }
 
-pub async fn run_ssh_capture(target: &SshTarget, remote_command: &str) -> Result<String, SessionError> {
+pub async fn run_ssh_capture(
+    target: &SshTarget,
+    remote_command: &str,
+) -> Result<String, SessionError> {
     let mut command = Command::new("ssh");
 
     if let Some(port) = target.port {

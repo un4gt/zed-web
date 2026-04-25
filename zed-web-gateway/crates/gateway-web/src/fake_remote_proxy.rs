@@ -40,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     messages::AddWorktreeResponse {
                         worktree_id,
                         canonicalized_path: root.display().to_string(),
+                        root_repo_common_dir: None,
                     }
                     .into_envelope(next_message_id, Some(envelope.id)),
                 )
@@ -115,8 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(path) = opened.get(&message.buffer_id).cloned() else {
                     continue;
                 };
-                if let Some(messages::operation::Variant::Edit(edit)) =
-                    message.operations.first().and_then(|operation| operation.variant.clone())
+                if let Some(messages::operation::Variant::Edit(edit)) = message
+                    .operations
+                    .first()
+                    .and_then(|operation| operation.variant.clone())
                 {
                     if let Some(new_text) = edit.new_text.first() {
                         tokio::fs::write(path, new_text).await?;
@@ -147,8 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(messages::envelope::Payload::FlushBufferedMessages(_)) => {
                 write_envelope(
                     &mut stdout,
-                    messages::FlushBufferedMessagesResponse {}
-                        .into_envelope(next_message_id, Some(envelope.id)),
+                    messages::Ack {}.into_envelope(next_message_id, Some(envelope.id)),
                 )
                 .await?;
                 next_message_id += 1;
@@ -162,7 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn read_envelope(stdin: &mut tokio::io::Stdin) -> Result<Envelope, Box<dyn std::error::Error>> {
+async fn read_envelope(
+    stdin: &mut tokio::io::Stdin,
+) -> Result<Envelope, Box<dyn std::error::Error>> {
     let mut len = [0_u8; 4];
     stdin.read_exact(&mut len).await?;
     let mut buffer = vec![0_u8; u32::from_le_bytes(len) as usize];
@@ -176,7 +180,9 @@ async fn write_envelope(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = Vec::new();
     envelope.encode(&mut buffer)?;
-    stdout.write_all(&(buffer.len() as u32).to_le_bytes()).await?;
+    stdout
+        .write_all(&(buffer.len() as u32).to_le_bytes())
+        .await?;
     stdout.write_all(&buffer).await?;
     stdout.flush().await?;
     Ok(())

@@ -9,22 +9,40 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::handlers;
-use crate::terminal::{terminal_socket_channel, TerminalSocketCommand};
+use crate::terminal::{TerminalSocketCommand, terminal_socket_channel};
 
 pub fn api_scope() -> Scope {
     web::scope("/api")
         .route("/health", web::get().to(health))
         .route("/sessions", web::post().to(handlers::create_session))
-        .route("/sessions/{session_id}", web::get().to(handlers::get_session))
+        .route(
+            "/sessions/{session_id}",
+            web::get().to(handlers::get_session),
+        )
         .route(
             "/sessions/{session_id}/reconnect",
             web::post().to(handlers::reconnect_session),
         )
-        .route("/sessions/{session_id}/tree", web::get().to(handlers::get_tree))
-        .route("/sessions/{session_id}/file", web::get().to(handlers::get_file))
-        .route("/sessions/{session_id}/file", web::put().to(handlers::put_file))
-        .route("/sessions/{session_id}/events", web::get().to(session_events))
-        .route("/sessions/{session_id}/terminal", web::get().to(terminal_ws))
+        .route(
+            "/sessions/{session_id}/tree",
+            web::get().to(handlers::get_tree),
+        )
+        .route(
+            "/sessions/{session_id}/file",
+            web::get().to(handlers::get_file),
+        )
+        .route(
+            "/sessions/{session_id}/file",
+            web::put().to(handlers::put_file),
+        )
+        .route(
+            "/sessions/{session_id}/events",
+            web::get().to(session_events),
+        )
+        .route(
+            "/sessions/{session_id}/terminal",
+            web::get().to(terminal_ws),
+        )
 }
 
 async fn health() -> HttpResponse {
@@ -37,11 +55,7 @@ async fn session_events(
     state: web::Data<AppState>,
     session_id: web::Path<Uuid>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let session = state
-        .registry
-        .get(session_id.into_inner())
-        .await
-        .ok_or_else(|| actix_web::error::ErrorNotFound("session not found"))?;
+    let session = handlers::require_session(state, session_id.into_inner()).await?;
 
     let (response, mut session_ws, _) = actix_ws::handle(&req, stream)?;
     let mut event_rx = session.subscribe();
@@ -88,16 +102,12 @@ async fn terminal_ws(
     session_id: web::Path<Uuid>,
     query: web::Query<gateway_core::api::TerminalQuery>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let session = state
-        .registry
-        .get(session_id.into_inner())
-        .await
-        .ok_or_else(|| actix_web::error::ErrorNotFound("session not found"))?;
+    let session = handlers::require_session(state, session_id.into_inner()).await?;
 
     let terminal = session
         .open_terminal(query.into_inner().cwd)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?;
+        .map_err(handlers::ApiError::from_session_error)?;
 
     let (response, mut socket, mut messages) = actix_ws::handle(&req, stream)?;
     let terminal = std::sync::Arc::new(terminal);
@@ -170,7 +180,10 @@ async fn terminal_ws(
                     }
                 }
                 Ok(Message::Ping(bytes)) => {
-                    if writer_socket_tx.send(TerminalSocketCommand::Pong(bytes.to_vec())).is_err() {
+                    if writer_socket_tx
+                        .send(TerminalSocketCommand::Pong(bytes.to_vec()))
+                        .is_err()
+                    {
                         break;
                     }
                 }

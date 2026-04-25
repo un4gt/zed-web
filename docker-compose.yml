@@ -1,21 +1,28 @@
 services:
   zed-web:
+    image: ${ZED_WEB_IMAGE:-ghcr.io/un4gt/zed-web:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${ZED_WEB_IMAGE:-zed-web:latest}
     container_name: zed-web
+    init: true
     restart: unless-stopped
     ports:
       - "${HOST_PORT:-8080}:80"
     environment:
-      GATEWAY_HOST: ${GATEWAY_HOST:-0.0.0.0}
+      GATEWAY_HOST: ${GATEWAY_HOST:-127.0.0.1}
       GATEWAY_PORT: ${GATEWAY_PORT:-8080}
-      FRONTEND_PORT: ${FRONTEND_PORT:-8081}
       ZED_WEB_DATA_DIR: /var/lib/zed-web
       SSH_AUTH_SOCK: /ssh-agent
     volumes:
       - ${ZED_WEB_DATA_PATH:-./data}:/var/lib/zed-web
       - ${ZED_WEB_SSH_PATH:-${HOME}/.ssh}:/root/.ssh:ro
+      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/api/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,14 +1,19 @@
 use std::fs;
+use std::future::Future;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use actix_web::{App, test};
 use gateway_core::api::{
     CreateSessionRequest, RemoteServerPolicy, RemoteServerUpdateMode, SaveFileRequest,
 };
+use gateway_web::app::AppState;
 use gateway_web::registry::SessionRegistry;
+use gateway_web::routes::api_scope;
+use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
@@ -17,8 +22,8 @@ async fn open_file_save_and_terminal_work_locally() {
     let harness = TestHarness::start().expect("start test ssh harness");
     let registry = SessionRegistry::new();
 
-    let snapshot = registry
-        .create_session(CreateSessionRequest {
+    let snapshot = await_with_timeout(
+        registry.create_session(CreateSessionRequest {
             host: "127.0.0.1".into(),
             user: Some(harness.username.clone()),
             port: Some(harness.port),
@@ -26,16 +31,27 @@ async fn open_file_save_and_terminal_work_locally() {
             project_path: harness.project_dir.to_string_lossy().to_string(),
             zed_remote_binary: Some(harness.remote_binary_path.to_string_lossy().to_string()),
             managed_remote_exec: Some(harness.remote_binary_path.to_string_lossy().to_string()),
-            managed_data_dir: Some(harness.root_dir.join("managed-data").to_string_lossy().to_string()),
+            managed_data_dir: Some(
+                harness
+                    .root_dir
+                    .join("managed-data")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             remote_server: Some(RemoteServerPolicy {
-                mode: RemoteServerUpdateMode::Latest,
+                mode: RemoteServerUpdateMode::Disabled,
                 version: None,
             }),
-        })
-        .await
-        .expect("create session");
+        }),
+        "create session",
+    )
+    .await
+    .expect("create session");
 
-    assert_eq!(snapshot.state, gateway_core::session::ConnectionState::Ready);
+    assert_eq!(
+        snapshot.state,
+        gateway_core::session::ConnectionState::Ready
+    );
     assert!(snapshot.proxy_active);
 
     let session = registry.get(snapshot.id).await.expect("lookup session");
@@ -54,7 +70,8 @@ async fn open_file_save_and_terminal_work_locally() {
         .await
         .expect("save file");
 
-    let saved_contents = fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved contents");
+    let saved_contents =
+        fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved contents");
     assert_eq!(saved_contents, "changed through gateway\n");
 
     let terminal = session.open_terminal(None).await.expect("open terminal");
@@ -70,18 +87,92 @@ async fn open_file_save_and_terminal_work_locally() {
     {
         let mut stdout = terminal.stdout.lock().await;
         let mut buffer = [0_u8; 4096];
-        let read = tokio::time::timeout(Duration::from_secs(5), tokio::io::AsyncReadExt::read(&mut *stdout, &mut buffer))
-            .await
-            .expect("terminal timeout")
-            .expect("terminal read");
+        let read = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::io::AsyncReadExt::read(&mut *stdout, &mut buffer),
+        )
+        .await
+        .expect("terminal timeout")
+        .expect("terminal read");
         output.push_str(&String::from_utf8_lossy(&buffer[..read]));
     }
 
-    assert!(output.contains("terminal-ok"), "terminal output was: {output}");
+    assert!(
+        output.contains("terminal-ok"),
+        "terminal output was: {output}"
+    );
 
     let reconnected = session.reconnect().await.expect("reconnect session");
     assert!(reconnected.proxy_active);
     assert_eq!(reconnected.reconnect_count, 1);
+}
+
+#[actix_web::test]
+async fn open_file_save_should_work_over_http() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let app = test::init_service(App::new().app_data(state).service(api_scope())).await;
+
+    let create_request = test::TestRequest::post()
+        .uri("/api/sessions")
+        .set_json(serde_json::json!({
+            "host": "127.0.0.1",
+            "user": harness.username,
+            "port": harness.port,
+            "ssh_args": harness.ssh_args(),
+            "project_path": harness.project_dir,
+            "zed_remote_binary": harness.remote_binary_path,
+            "managed_data_dir": harness.root_dir.join("managed-data"),
+            "remote_server": {
+                "mode": "disabled"
+            }
+        }))
+        .to_request();
+    let create_response = await_with_timeout(
+        test::call_service(&app, create_request),
+        "create session request",
+    )
+    .await;
+    assert!(create_response.status().is_success());
+    let create_body: Value = test::read_body_json(create_response).await;
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let read_request = test::TestRequest::get()
+        .uri(&format!("/api/sessions/{session_id}/file?path=hello.txt"))
+        .to_request();
+    let read_response =
+        await_with_timeout(test::call_service(&app, read_request), "read file request").await;
+    assert!(read_response.status().is_success());
+    let read_body: Value = test::read_body_json(read_response).await;
+    assert_eq!(read_body["content"], "hello from ssh test\n");
+
+    let save_request = test::TestRequest::put()
+        .uri(&format!("/api/sessions/{session_id}/file"))
+        .set_json(serde_json::json!({
+            "path": "hello.txt",
+            "content": "changed through http\n"
+        }))
+        .to_request();
+    let save_response =
+        await_with_timeout(test::call_service(&app, save_request), "save file request").await;
+    assert!(save_response.status().is_success());
+    let save_body: Value = test::read_body_json(save_response).await;
+    assert_eq!(save_body["bytes_written"], "changed through http\n".len());
+
+    let saved_contents =
+        fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved contents");
+    assert_eq!(saved_contents, "changed through http\n");
+}
+
+async fn await_with_timeout<T>(future: impl Future<Output = T>, label: &'static str) -> T {
+    tokio::time::timeout(Duration::from_secs(15), future)
+        .await
+        .unwrap_or_else(|_| panic!("{label} timed out"))
 }
 
 struct TestHarness {
@@ -118,8 +209,12 @@ impl TestHarness {
         fs::create_dir_all(&project_dir)?;
         fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700))?;
 
-        run(Command::new("ssh-keygen").args(["-t", "ed25519", "-N", "", "-f"]).arg(&host_key))?;
-        run(Command::new("ssh-keygen").args(["-t", "ed25519", "-N", "", "-f"]).arg(&user_key))?;
+        run(Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-f"])
+            .arg(&host_key))?;
+        run(Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-f"])
+            .arg(&user_key))?;
 
         let public_key = fs::read_to_string(user_key.with_extension("pub"))?;
         fs::write(&authorized_keys, public_key)?;
@@ -157,14 +252,12 @@ impl TestHarness {
             .arg("127.0.0.1")
             .output()?;
         if !keyscan.status.success() {
-            return Err(
-                format!(
-                    "ssh-keyscan failed: stdout={} stderr={}",
-                    String::from_utf8_lossy(&keyscan.stdout),
-                    String::from_utf8_lossy(&keyscan.stderr)
-                )
-                .into(),
-            );
+            return Err(format!(
+                "ssh-keyscan failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&keyscan.stdout),
+                String::from_utf8_lossy(&keyscan.stderr)
+            )
+            .into());
         }
         fs::write(&known_hosts, keyscan.stdout)?;
 
@@ -259,8 +352,8 @@ fi
 printf 'unsupported command\n' >&2
 exit 1
 "#,
-            helper = helper_binary.display()
-            ,log_file = helper_log_path.display()
+            helper = helper_binary.display(),
+            log_file = helper_log_path.display()
         ),
     )?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;

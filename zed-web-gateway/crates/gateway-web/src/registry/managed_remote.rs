@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use reqwest::Client;
 use serde::Deserialize;
-use tokio::fs;
 use sha2::Digest;
+use tokio::fs;
 
 use gateway_core::api::RemoteServerUpdateMode;
 use gateway_core::error::SessionError;
@@ -12,7 +12,8 @@ use gateway_ssh::transport;
 
 use super::remote_version::ResolvedRemoteServerPolicy;
 
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/zed-industries/zed/releases/latest";
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/zed-industries/zed/releases/latest";
 
 #[derive(Deserialize)]
 struct ReleaseAsset {
@@ -54,11 +55,13 @@ pub async fn prepare_managed_remote_binary(
     }
 
     let requested_version = match policy.mode {
-        RemoteServerUpdateMode::Latest => resolve_latest_release_version().await?,
-        RemoteServerUpdateMode::Pinned => policy
-            .selected_version
-            .clone()
-            .ok_or_else(|| SessionError::InvalidRequest("missing pinned remote-server version".into()))?,
+        RemoteServerUpdateMode::Latest => match policy.selected_version.clone() {
+            Some(version) => version,
+            None => resolve_latest_release_version().await?,
+        },
+        RemoteServerUpdateMode::Pinned => policy.selected_version.clone().ok_or_else(|| {
+            SessionError::InvalidRequest("missing pinned remote-server version".into())
+        })?,
         RemoteServerUpdateMode::Disabled => unreachable!(),
     };
 
@@ -70,7 +73,8 @@ pub async fn prepare_managed_remote_binary(
         managed_remote_exec_override,
     )
     .await?;
-    let remote_binary_path = upload_remote_binary(target, &local_binary, &requested_version, &platform).await?;
+    let remote_binary_path =
+        upload_remote_binary(target, &local_binary, &requested_version, &platform).await?;
 
     Ok(ManagedRemoteBinary {
         effective_version: Some(requested_version),
@@ -89,16 +93,17 @@ async fn fetch_release_metadata(url: &str) -> Result<ReleaseResponse, SessionErr
         .header("User-Agent", "zed-web-gateway")
         .send()
         .await
-        .map_err(|error| SessionError::SshCommand(format!("failed to query zed release metadata: {error}")))?;
+        .map_err(|error| {
+            SessionError::SshCommand(format!("failed to query zed release metadata: {error}"))
+        })?;
 
     let response = response.error_for_status().map_err(|error| {
         SessionError::SshCommand(format!("failed to fetch zed release metadata: {error}"))
     })?;
 
-    response
-        .json::<ReleaseResponse>()
-        .await
-        .map_err(|error| SessionError::SshCommand(format!("failed to parse zed release metadata: {error}")))
+    response.json::<ReleaseResponse>().await.map_err(|error| {
+        SessionError::SshCommand(format!("failed to parse zed release metadata: {error}"))
+    })
 }
 
 async fn detect_remote_platform(target: &SshTarget) -> Result<RemotePlatform, SessionError> {
@@ -173,11 +178,14 @@ async fn download_release_binary(
     platform: &RemotePlatform,
     binary_path: &Path,
 ) -> Result<(), SessionError> {
-    let release_url = format!(
-        "https://api.github.com/repos/zed-industries/zed/releases/tags/{version}"
-    );
+    let release_url =
+        format!("https://api.github.com/repos/zed-industries/zed/releases/tags/{version}");
     let release = fetch_release_metadata(&release_url).await?;
-    let asset_name = format!("zed-remote-server-{}-{}.gz", platform.os, normalized_arch(&platform.arch));
+    let asset_name = format!(
+        "zed-remote-server-{}-{}.gz",
+        platform.os,
+        normalized_arch(&platform.arch)
+    );
     let asset = release
         .assets
         .into_iter()
@@ -189,12 +197,18 @@ async fn download_release_binary(
         .header("User-Agent", "zed-web-gateway")
         .send()
         .await
-        .map_err(|error| SessionError::SshCommand(format!("failed to download remote-server asset: {error}")))?
+        .map_err(|error| {
+            SessionError::SshCommand(format!("failed to download remote-server asset: {error}"))
+        })?
         .error_for_status()
-        .map_err(|error| SessionError::SshCommand(format!("failed to fetch remote-server asset: {error}")))?
+        .map_err(|error| {
+            SessionError::SshCommand(format!("failed to fetch remote-server asset: {error}"))
+        })?
         .bytes()
         .await
-        .map_err(|error| SessionError::SshCommand(format!("failed to read remote-server asset bytes: {error}")))?;
+        .map_err(|error| {
+            SessionError::SshCommand(format!("failed to read remote-server asset bytes: {error}"))
+        })?;
 
     if let Some(digest) = asset.digest {
         verify_digest(&bytes, &digest)?;
@@ -225,7 +239,9 @@ fn verify_digest(bytes: &[u8], digest: &str) -> Result<(), SessionError> {
     if actual == expected {
         Ok(())
     } else {
-        Err(SessionError::SshCommand("downloaded remote-server digest mismatch".into()))
+        Err(SessionError::SshCommand(
+            "downloaded remote-server digest mismatch".into(),
+        ))
     }
 }
 
@@ -251,14 +267,33 @@ async fn upload_remote_binary(
 
     transport::run_ssh_capture(
         target,
-        &format!("sh -lc 'mkdir -p {remote_dir}'", remote_dir = gateway_core::ssh::shell_escape(&remote_dir)),
+        &format!(
+            "sh -lc 'mkdir -p {remote_dir}'",
+            remote_dir = gateway_core::ssh::shell_escape(&remote_dir)
+        ),
     )
     .await?;
+
+    let exists = transport::run_ssh_capture(
+        target,
+        &format!(
+            "sh -lc 'test -x {path} && printf present || printf missing'",
+            path = gateway_core::ssh::shell_escape(&remote_binary_path)
+        ),
+    )
+    .await?;
+
+    if exists.trim() == "present" {
+        return Ok(remote_binary_path);
+    }
 
     transport::copy_file_to_remote(target, local_binary, &remote_binary_path).await?;
     transport::run_ssh_capture(
         target,
-        &format!("sh -lc 'chmod +x {path}'", path = gateway_core::ssh::shell_escape(&remote_binary_path)),
+        &format!(
+            "sh -lc 'chmod +x {path}'",
+            path = gateway_core::ssh::shell_escape(&remote_binary_path)
+        ),
     )
     .await?;
 

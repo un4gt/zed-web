@@ -15,5 +15,12 @@ pub fn terminal_socket_channel() -> (TerminalSocketTx, TerminalSocketRx) {
 }
 
 pub fn is_terminal_input(message: &Message) -> bool {
-    matches!(message, Message::Binary(_) | Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Close(_))
+    matches!(
+        message,
+        Message::Binary(_)
+            | Message::Text(_)
+            | Message::Ping(_)
+            | Message::Pong(_)
+            | Message::Close(_)
+    )
 }

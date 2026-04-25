@@ -18,7 +18,10 @@ pub struct Envelope {
     pub original_sender_id: Option<PeerId>,
     #[prost(uint32, optional, tag = "266")]
     pub ack_id: Option<u32>,
-    #[prost(oneof = "envelope::Payload", tags = "5, 6, 57, 58, 59, 60, 61, 62, 63, 222, 223, 267, 268, 381")]
+    #[prost(
+        oneof = "envelope::Payload",
+        tags = "5, 6, 45, 57, 58, 59, 60, 61, 62, 63, 64, 67, 68, 186, 187, 195, 222, 223, 267, 268, 381, 413, 414"
+    )]
     pub payload: Option<envelope::Payload>,
 }
 
@@ -26,9 +29,12 @@ pub mod envelope {
     use prost::Oneof;
 
     use super::{
-        Ack, AddWorktree, AddWorktreeResponse, BufferSaved, CreateBufferForPeer, Error,
-        FlushBufferedMessages, FlushBufferedMessagesResponse, OpenBufferByPath, OpenBufferResponse,
-        RemoteStarted, SaveBuffer, UpdateBuffer, UpdateBufferFile,
+        Ack, AddWorktree, AddWorktreeResponse, AllocateWorktreeId, AllocateWorktreeIdResponse,
+        BufferReloaded, BufferSaved, CreateBufferForPeer, Error, FlushBufferedMessages,
+        FlushBufferedMessagesResponse, OpenBufferByPath, OpenBufferResponse, Ping,
+        RejoinRemoteProjects, RejoinRemoteProjectsResponse, RemoteStarted, SaveBuffer,
+        SynchronizeBuffers, SynchronizeBuffersResponse, UpdateBuffer, UpdateBufferFile,
+        UpdateWorktree,
     };
 
     #[derive(Clone, PartialEq, Oneof)]
@@ -37,6 +43,8 @@ pub mod envelope {
         Ack(Ack),
         #[prost(message, tag = "6")]
         Error(Error),
+        #[prost(message, tag = "45")]
+        UpdateWorktree(UpdateWorktree),
         #[prost(message, tag = "57")]
         OpenBufferByPath(OpenBufferByPath),
         #[prost(message, tag = "58")]
@@ -51,6 +59,18 @@ pub mod envelope {
         SaveBuffer(SaveBuffer),
         #[prost(message, tag = "63")]
         BufferSaved(BufferSaved),
+        #[prost(message, tag = "64")]
+        BufferReloaded(BufferReloaded),
+        #[prost(message, tag = "67")]
+        SynchronizeBuffers(SynchronizeBuffers),
+        #[prost(message, tag = "68")]
+        SynchronizeBuffersResponse(SynchronizeBuffersResponse),
+        #[prost(message, tag = "186")]
+        RejoinRemoteProjects(RejoinRemoteProjects),
+        #[prost(message, tag = "187")]
+        RejoinRemoteProjectsResponse(RejoinRemoteProjectsResponse),
+        #[prost(message, tag = "195")]
+        Ping(Ping),
         #[prost(message, tag = "222")]
         AddWorktree(AddWorktree),
         #[prost(message, tag = "223")]
@@ -61,11 +81,18 @@ pub mod envelope {
         FlushBufferedMessagesResponse(FlushBufferedMessagesResponse),
         #[prost(message, tag = "381")]
         RemoteStarted(RemoteStarted),
+        #[prost(message, tag = "413")]
+        AllocateWorktreeId(AllocateWorktreeId),
+        #[prost(message, tag = "414")]
+        AllocateWorktreeIdResponse(AllocateWorktreeIdResponse),
     }
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Ack {}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Ping {}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Error {
@@ -89,6 +116,68 @@ pub struct AddWorktreeResponse {
     pub worktree_id: u64,
     #[prost(string, tag = "2")]
     pub canonicalized_path: String,
+    #[prost(string, optional, tag = "3")]
+    pub root_repo_common_dir: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Entry {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bool, tag = "2")]
+    pub is_dir: bool,
+    #[prost(string, tag = "3")]
+    pub path: String,
+    #[prost(uint64, tag = "4")]
+    pub inode: u64,
+    #[prost(message, optional, tag = "5")]
+    pub mtime: Option<Timestamp>,
+    #[prost(bool, tag = "7")]
+    pub is_ignored: bool,
+    #[prost(bool, tag = "8")]
+    pub is_external: bool,
+    #[prost(bool, tag = "10")]
+    pub is_fifo: bool,
+    #[prost(uint64, optional, tag = "11")]
+    pub size: Option<u64>,
+    #[prost(string, optional, tag = "12")]
+    pub canonical_path: Option<String>,
+    #[prost(bool, tag = "13")]
+    pub is_hidden: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct UpdateWorktree {
+    #[prost(uint64, tag = "1")]
+    pub project_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub worktree_id: u64,
+    #[prost(string, tag = "3")]
+    pub root_name: String,
+    #[prost(message, repeated, tag = "4")]
+    pub updated_entries: Vec<Entry>,
+    #[prost(uint64, repeated, tag = "5")]
+    pub removed_entries: Vec<u64>,
+    #[prost(uint64, tag = "8")]
+    pub scan_id: u64,
+    #[prost(bool, tag = "9")]
+    pub is_last_update: bool,
+    #[prost(string, tag = "10")]
+    pub abs_path: String,
+    #[prost(string, optional, tag = "11")]
+    pub root_repo_common_dir: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct AllocateWorktreeId {
+    #[prost(uint64, tag = "1")]
+    pub project_id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct AllocateWorktreeIdResponse {
+    #[prost(uint64, tag = "1")]
+    pub worktree_id: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -185,6 +274,8 @@ pub struct SaveBuffer {
     pub buffer_id: u64,
     #[prost(message, repeated, tag = "3")]
     pub version: Vec<VectorClockEntry>,
+    #[prost(message, optional, tag = "4")]
+    pub new_path: Option<ProjectPath>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -197,6 +288,100 @@ pub struct BufferSaved {
     pub version: Vec<VectorClockEntry>,
     #[prost(message, optional, tag = "4")]
     pub mtime: Option<Timestamp>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct BufferReloaded {
+    #[prost(uint64, tag = "1")]
+    pub project_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub buffer_id: u64,
+    #[prost(message, repeated, tag = "3")]
+    pub version: Vec<VectorClockEntry>,
+    #[prost(message, optional, tag = "4")]
+    pub mtime: Option<Timestamp>,
+    #[prost(int32, tag = "6")]
+    pub line_ending: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct SynchronizeBuffers {
+    #[prost(uint64, tag = "1")]
+    pub project_id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub buffers: Vec<BufferVersion>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct SynchronizeBuffersResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub buffers: Vec<BufferVersion>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct BufferVersion {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub version: Vec<VectorClockEntry>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ProjectPath {
+    #[prost(uint64, tag = "1")]
+    pub worktree_id: u64,
+    #[prost(string, tag = "2")]
+    pub path: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RejoinRemoteProjects {
+    #[prost(message, repeated, tag = "1")]
+    pub rejoined_projects: Vec<RejoinProject>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RejoinRemoteProjectsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub rejoined_projects: Vec<RejoinedProject>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RejoinProject {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub worktrees: Vec<RejoinWorktree>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RejoinWorktree {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint64, tag = "2")]
+    pub scan_id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RejoinedProject {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub worktrees: Vec<WorktreeMetadata>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WorktreeMetadata {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub root_name: String,
+    #[prost(bool, tag = "3")]
+    pub visible: bool,
+    #[prost(string, tag = "4")]
+    pub abs_path: String,
+    #[prost(string, optional, tag = "5")]
+    pub root_repo_common_dir: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -233,19 +418,21 @@ pub struct VectorClockEntry {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct Operation {
-    #[prost(oneof = "operation::Variant", tags = "1")]
+    #[prost(oneof = "operation::Variant", tags = "1, 6")]
     pub variant: Option<operation::Variant>,
 }
 
 pub mod operation {
     use prost::Oneof;
 
-    use super::Edit;
+    use super::{Edit, UpdateLineEnding};
 
     #[derive(Clone, PartialEq, Oneof)]
     pub enum Variant {
         #[prost(message, tag = "1")]
         Edit(Edit),
+        #[prost(message, tag = "6")]
+        UpdateLineEnding(UpdateLineEnding),
     }
 }
 
@@ -261,6 +448,16 @@ pub struct Edit {
     pub ranges: Vec<Range>,
     #[prost(string, repeated, tag = "5")]
     pub new_text: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct UpdateLineEnding {
+    #[prost(uint32, tag = "1")]
+    pub replica_id: u32,
+    #[prost(uint32, tag = "2")]
+    pub lamport_timestamp: u32,
+    #[prost(int32, tag = "3")]
+    pub line_ending: i32,
 }
 
 #[derive(Clone, PartialEq, Message)]
