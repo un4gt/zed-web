@@ -151,6 +151,23 @@ async fn open_file_save_should_work_over_http() {
     let read_body: Value = test::read_body_json(read_response).await;
     assert_eq!(read_body["content"], "hello from ssh test\n");
 
+    let absolute_path = harness.project_dir.join("hello.txt");
+    let read_absolute_request = test::TestRequest::get()
+        .uri(&format!(
+            "/api/sessions/{session_id}/file?path={}",
+            absolute_path.to_string_lossy()
+        ))
+        .to_request();
+    let read_absolute_response = await_with_timeout(
+        test::call_service(&app, read_absolute_request),
+        "read absolute file request",
+    )
+    .await;
+    assert!(read_absolute_response.status().is_success());
+    let read_absolute_body: Value = test::read_body_json(read_absolute_response).await;
+    assert_eq!(read_absolute_body["path"], "hello.txt");
+    assert_eq!(read_absolute_body["content"], "hello from ssh test\n");
+
     let save_request = test::TestRequest::put()
         .uri(&format!("/api/sessions/{session_id}/file"))
         .set_json(serde_json::json!({
@@ -167,6 +184,78 @@ async fn open_file_save_should_work_over_http() {
     let saved_contents =
         fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved contents");
     assert_eq!(saved_contents, "changed through http\n");
+
+    let save_absolute_request = test::TestRequest::put()
+        .uri(&format!("/api/sessions/{session_id}/file"))
+        .set_json(serde_json::json!({
+            "path": absolute_path,
+            "content": "changed through absolute http\n"
+        }))
+        .to_request();
+    let save_absolute_response = await_with_timeout(
+        test::call_service(&app, save_absolute_request),
+        "save absolute file request",
+    )
+    .await;
+    assert!(save_absolute_response.status().is_success());
+    let save_absolute_body: Value = test::read_body_json(save_absolute_response).await;
+    assert_eq!(save_absolute_body["path"], "hello.txt");
+
+    let saved_absolute_contents =
+        fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved contents");
+    assert_eq!(saved_absolute_contents, "changed through absolute http\n");
+}
+
+#[actix_web::test]
+async fn open_file_should_reject_absolute_path_outside_project() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let app = test::init_service(App::new().app_data(state).service(api_scope())).await;
+
+    let create_request = test::TestRequest::post()
+        .uri("/api/sessions")
+        .set_json(serde_json::json!({
+            "host": "127.0.0.1",
+            "user": harness.username,
+            "port": harness.port,
+            "ssh_args": harness.ssh_args(),
+            "project_path": harness.project_dir,
+            "zed_remote_binary": harness.remote_binary_path,
+            "managed_data_dir": harness.root_dir.join("managed-data"),
+            "remote_server": {
+                "mode": "disabled"
+            }
+        }))
+        .to_request();
+    let create_response = await_with_timeout(
+        test::call_service(&app, create_request),
+        "create session request",
+    )
+    .await;
+    assert!(create_response.status().is_success());
+    let create_body: Value = test::read_body_json(create_response).await;
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let read_request = test::TestRequest::get()
+        .uri(&format!("/api/sessions/{session_id}/file?path=/etc/passwd"))
+        .to_request();
+    let read_response =
+        await_with_timeout(test::call_service(&app, read_request), "read file request").await;
+
+    assert_eq!(
+        read_response.status(),
+        actix_web::http::StatusCode::BAD_REQUEST
+    );
+    let read_body: Value = test::read_body_json(read_response).await;
+    assert_eq!(
+        read_body["error"],
+        "absolute path is outside project root: /etc/passwd"
+    );
 }
 
 async fn await_with_timeout<T>(future: impl Future<Output = T>, label: &'static str) -> T {

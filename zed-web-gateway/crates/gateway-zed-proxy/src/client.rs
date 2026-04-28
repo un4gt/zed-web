@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use gateway_core::error::SessionError;
@@ -26,8 +26,10 @@ struct ClientState {
     reader: Box<dyn AsyncRead + Send + Unpin>,
     max_received: u32,
     buffered_outgoing: VecDeque<Envelope>,
+    opened_buffers: HashMap<u64, OpenedBuffer>,
 }
 
+#[derive(Clone)]
 pub struct OpenedBuffer {
     pub buffer_id: u64,
     pub file: Option<messages::File>,
@@ -48,6 +50,7 @@ impl ZedProxyClient {
                 reader,
                 max_received: 0,
                 buffered_outgoing: VecDeque::new(),
+                opened_buffers: HashMap::new(),
             })),
         }
     }
@@ -108,6 +111,10 @@ impl ZedProxyClient {
             .await?;
 
         let buffer_id = response.buffer_id;
+        if let Some(buffer) = self.cached_opened_buffer(buffer_id).await {
+            return Ok(buffer);
+        }
+
         let mut state = None;
         let mut operations = Vec::new();
 
@@ -147,12 +154,14 @@ impl ZedProxyClient {
                                     &operations,
                                 )?;
                                 self.send_ack(envelope.id).await?;
-                                return Ok(OpenedBuffer {
+                                let buffer = OpenedBuffer {
                                     buffer_id,
                                     file: buffer_state.file,
                                     base_text: content,
                                     saved_version: buffer_state.saved_version,
-                                });
+                                };
+                                self.cache_opened_buffer(buffer.clone()).await;
+                                return Ok(buffer);
                             }
                         }
                         _ => {}
@@ -198,13 +207,32 @@ impl ZedProxyClient {
         };
 
         let _: messages::Ack = self.request(update).await?;
-        self.request(SaveBuffer {
-            project_id: REMOTE_SERVER_PROJECT_ID,
+        let saved: BufferSaved = self
+            .request(SaveBuffer {
+                project_id: REMOTE_SERVER_PROJECT_ID,
+                buffer_id: buffer.buffer_id,
+                version: next_version,
+                new_path: None,
+            })
+            .await?;
+        self.cache_opened_buffer(OpenedBuffer {
             buffer_id: buffer.buffer_id,
-            version: next_version,
-            new_path: None,
+            file: buffer.file.clone(),
+            base_text: content.to_string(),
+            saved_version: saved.version.clone(),
         })
-        .await
+        .await;
+        Ok(saved)
+    }
+
+    async fn cached_opened_buffer(&self, buffer_id: u64) -> Option<OpenedBuffer> {
+        let state = self.state.lock().await;
+        state.opened_buffers.get(&buffer_id).cloned()
+    }
+
+    async fn cache_opened_buffer(&self, buffer: OpenedBuffer) {
+        let mut state = self.state.lock().await;
+        state.opened_buffers.insert(buffer.buffer_id, buffer);
     }
 
     async fn request<T, R>(&self, payload: T) -> Result<R, SessionError>
@@ -673,6 +701,129 @@ mod tests {
 
         assert_eq!(buffer.base_text, "hello world");
         assert_eq!(buffer.buffer_id, 11);
+        server.await.expect("join fake server");
+    }
+
+    #[tokio::test]
+    async fn open_buffer_by_path_reuses_cached_buffer_when_proxy_returns_existing_buffer_id() {
+        let (client_side, mut server_side) = duplex(4096);
+        let (server_read, server_write) = tokio::io::split(client_side);
+        let client = ZedProxyClient::new(Box::new(server_read), Box::new(server_write));
+
+        let server = tokio::spawn(async move {
+            let remote_started = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                ack_with_ack_id(2, Some(remote_started.id), remote_started.id),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::RemoteStarted {}.into_envelope(3, None),
+            )
+            .await;
+            let _remote_started_ack = read_envelope(&mut server_side).await;
+
+            let add_worktree_request = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                AddWorktreeResponse {
+                    worktree_id: 9,
+                    canonicalized_path: "/tmp/test".into(),
+                    root_repo_common_dir: None,
+                }
+                .into_envelope(4, Some(add_worktree_request.id)),
+            )
+            .await;
+
+            let first_open = read_envelope(&mut server_side).await;
+            write_envelope(
+                &mut server_side,
+                OpenBufferResponse { buffer_id: 11 }.into_envelope(5, Some(first_open.id)),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::CreateBufferForPeer {
+                    project_id: REMOTE_SERVER_PROJECT_ID,
+                    peer_id: Some(REMOTE_SERVER_PEER_ID),
+                    variant: Some(messages::create_buffer_for_peer::Variant::State(
+                        messages::BufferState {
+                            id: 11,
+                            file: Some(messages::File {
+                                worktree_id: 9,
+                                entry_id: None,
+                                path: "hello.txt".into(),
+                                mtime: None,
+                                is_deleted: false,
+                                is_historic: false,
+                            }),
+                            base_text: "cached text".into(),
+                            line_ending: 0,
+                            saved_version: vec![messages::VectorClockEntry {
+                                replica_id: 1,
+                                timestamp: 1,
+                            }],
+                            saved_mtime: None,
+                        },
+                    )),
+                }
+                .into_envelope(6, None),
+            )
+            .await;
+            write_envelope(
+                &mut server_side,
+                messages::CreateBufferForPeer {
+                    project_id: REMOTE_SERVER_PROJECT_ID,
+                    peer_id: Some(REMOTE_SERVER_PEER_ID),
+                    variant: Some(messages::create_buffer_for_peer::Variant::Chunk(
+                        messages::BufferChunk {
+                            buffer_id: 11,
+                            operations: Vec::new(),
+                            is_last: true,
+                        },
+                    )),
+                }
+                .into_envelope(7, None),
+            )
+            .await;
+
+            let second_open = loop {
+                let envelope = read_envelope(&mut server_side).await;
+                if matches!(
+                    envelope.payload,
+                    Some(messages::envelope::Payload::OpenBufferByPath(_))
+                ) {
+                    break envelope;
+                }
+            };
+            write_envelope(
+                &mut server_side,
+                OpenBufferResponse { buffer_id: 11 }.into_envelope(8, Some(second_open.id)),
+            )
+            .await;
+        });
+
+        client.initialize().await.expect("initialize proxy");
+        let worktree = client
+            .add_worktree("/tmp/test")
+            .await
+            .expect("add worktree");
+        let first = client
+            .open_buffer_by_path(worktree.worktree_id, "hello.txt")
+            .await
+            .expect("first open");
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.open_buffer_by_path(worktree.worktree_id, "hello.txt"),
+        )
+        .await
+        .expect("cached open timed out")
+        .expect("second open");
+
+        assert_eq!(first.buffer_id, 11);
+        assert_eq!(second.buffer_id, 11);
+        assert_eq!(second.base_text, "cached text");
         server.await.expect("join fake server");
     }
 

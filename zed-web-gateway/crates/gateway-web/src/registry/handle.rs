@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gateway_core::api::{
     CreateSessionRequest, FileResponse, RemoteServerUpdateMode, SaveFileRequest, SaveFileResponse,
@@ -7,7 +7,7 @@ use gateway_core::api::{
 };
 use gateway_core::error::SessionError;
 use gateway_core::events::GatewayEvent;
-use gateway_core::session::{ConnectionState, ProxyState};
+use gateway_core::session::{ConnectionState, ProxyState, normalize_worktree_relative_path};
 use gateway_core::ssh::SshTarget;
 use gateway_ssh::proxy::spawn_proxy;
 use gateway_ssh::terminal::{TerminalProcess, open_terminal};
@@ -16,6 +16,7 @@ use gateway_zed_proxy::client::ZedProxyClient;
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::time::timeout;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ use super::managed_remote::prepare_managed_remote_binary;
 use super::remote_version::resolve_remote_server_policy;
 
 const EVENT_BUFFER: usize = 256;
+const FILE_PROXY_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct SessionHandle {
     pub id: Uuid,
@@ -181,7 +183,27 @@ impl SessionHandle {
     }
 
     pub async fn read_file(&self, requested_path: &str) -> Result<FileResponse, SessionError> {
-        let file = self.read_file_via_proxy(requested_path).await?;
+        let file = match timeout(FILE_PROXY_TIMEOUT, self.read_file_via_proxy(requested_path)).await
+        {
+            Ok(Ok(file)) => file,
+            Ok(Err(error)) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %requested_path,
+                    %error,
+                    "zed proxy file open failed; falling back to ssh file read"
+                );
+                self.read_file_via_transport(requested_path).await?
+            }
+            Err(_) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %requested_path,
+                    "zed proxy file open timed out; falling back to ssh file read"
+                );
+                self.read_file_via_transport(requested_path).await?
+            }
+        };
         self.touch_heartbeat().await;
         Ok(file)
     }
@@ -190,7 +212,28 @@ impl SessionHandle {
         &self,
         request: SaveFileRequest,
     ) -> Result<SaveFileResponse, SessionError> {
-        let response = self.save_file_via_proxy(request).await?;
+        let fallback_request = request.clone();
+        let path = request.path.clone();
+        let response = match timeout(FILE_PROXY_TIMEOUT, self.save_file_via_proxy(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %path,
+                    %error,
+                    "zed proxy file save failed; falling back to ssh file save"
+                );
+                self.save_file_via_transport(fallback_request).await?
+            }
+            Err(_) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %path,
+                    "zed proxy file save timed out; falling back to ssh file save"
+                );
+                self.save_file_via_transport(fallback_request).await?
+            }
+        };
         self.touch_heartbeat().await;
 
         self.send_event(GatewayEvent::SessionState {
@@ -391,52 +434,72 @@ impl SessionHandle {
         &self,
         requested_path: &str,
     ) -> Result<FileResponse, SessionError> {
-        let worktree_id = self
-            .inner
-            .read()
-            .await
+        let inner = self.inner.read().await;
+        let worktree_id = inner
             .worktree_id
             .ok_or_else(|| SessionError::SshCommand("missing remote worktree".into()))?;
+        let relative_path = normalize_worktree_relative_path(&inner.project_path, requested_path)
+            .map_err(SessionError::InvalidRequest)?;
+        drop(inner);
+
         let mut client_slot = self.zed_client.lock().await;
         let client = client_slot
             .as_mut()
             .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
         let buffer = client
-            .open_buffer_by_path(worktree_id, requested_path)
+            .open_buffer_by_path(worktree_id, &relative_path)
             .await?;
         Ok(FileResponse {
             path: buffer
                 .file
                 .as_ref()
                 .map(|file| file.path.clone())
-                .unwrap_or_else(|| requested_path.to_string()),
+                .unwrap_or(relative_path),
             content: buffer.base_text,
             truncated: false,
         })
+    }
+
+    async fn read_file_via_transport(
+        &self,
+        requested_path: &str,
+    ) -> Result<FileResponse, SessionError> {
+        let (target, project_path) = self.target_and_path().await;
+        transport::read_file(&target, &project_path, requested_path).await
     }
 
     async fn save_file_via_proxy(
         &self,
         request: SaveFileRequest,
     ) -> Result<SaveFileResponse, SessionError> {
-        let worktree_id = self
-            .inner
-            .read()
-            .await
+        let inner = self.inner.read().await;
+        let worktree_id = inner
             .worktree_id
             .ok_or_else(|| SessionError::SshCommand("missing remote worktree".into()))?;
+        let relative_path = normalize_worktree_relative_path(&inner.project_path, &request.path)
+            .map_err(SessionError::InvalidRequest)?;
+        drop(inner);
+
         let mut client_slot = self.zed_client.lock().await;
         let client = client_slot
             .as_mut()
             .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
         let buffer = client
-            .open_buffer_by_path(worktree_id, &request.path)
+            .open_buffer_by_path(worktree_id, &relative_path)
             .await?;
         client.overwrite_and_save(&buffer, &request.content).await?;
         Ok(SaveFileResponse {
-            path: request.path,
+            path: relative_path,
             bytes_written: request.content.len(),
         })
+    }
+
+    async fn save_file_via_transport(
+        &self,
+        request: SaveFileRequest,
+    ) -> Result<SaveFileResponse, SessionError> {
+        let (target, project_path) = self.target_and_path().await;
+        transport::save_file(&target, &project_path, request).await
     }
 
     async fn touch_heartbeat(&self) {

@@ -7,7 +7,9 @@ use gateway_core::api::{
     DirectoryEntry, EntryKind, FileResponse, SaveFileRequest, SaveFileResponse, TreeResponse,
 };
 use gateway_core::error::SessionError;
-use gateway_core::session::{normalize_child_path, resolve_remote_path};
+use gateway_core::session::{
+    normalize_child_path, normalize_worktree_relative_path, resolve_remote_path,
+};
 use gateway_core::ssh::{SshTarget, shell_escape};
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -46,29 +48,37 @@ pub async fn list_directory(
     project_root: &str,
     requested_path: Option<&str>,
 ) -> Result<TreeResponse, SessionError> {
-    let root = resolve_remote_path(project_root, requested_path);
+    let relative_root = requested_path
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| normalize_worktree_relative_path(project_root, path))
+        .transpose()
+        .map_err(SessionError::InvalidRequest)?;
+    let root = resolve_remote_path(project_root, relative_root.as_deref());
     let command = format!(
         r#"sh -lc 'if [ -d {path} ]; then LC_ALL=C find {path} -mindepth 1 -maxdepth 1 -printf "%f\t%y\n" | sort; else exit 3; fi'"#,
         path = shell_escape(&root)
     );
     let output = run_ssh_capture(target, &command).await?;
 
-    let entries = output
-        .lines()
-        .filter_map(|line| {
-            let (name, kind) = line.split_once('\t')?;
-            let entry_kind = match kind {
-                "d" => EntryKind::Directory,
-                _ => EntryKind::File,
-            };
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        let Some((name, kind)) = line.split_once('\t') else {
+            continue;
+        };
+        let entry_kind = match kind {
+            "d" => EntryKind::Directory,
+            _ => EntryKind::File,
+        };
+        let path =
+            normalize_worktree_relative_path(project_root, &normalize_child_path(&root, name))
+                .map_err(SessionError::InvalidRequest)?;
 
-            Some(DirectoryEntry {
-                name: name.to_string(),
-                path: normalize_child_path(&root, name),
-                kind: entry_kind,
-            })
-        })
-        .collect();
+        entries.push(DirectoryEntry {
+            name: name.to_string(),
+            path,
+            kind: entry_kind,
+        });
+    }
 
     Ok(TreeResponse { root, entries })
 }
@@ -78,7 +88,9 @@ pub async fn read_file(
     project_root: &str,
     requested_path: &str,
 ) -> Result<FileResponse, SessionError> {
-    let path = resolve_remote_path(project_root, Some(requested_path));
+    let relative_path = normalize_worktree_relative_path(project_root, requested_path)
+        .map_err(SessionError::InvalidRequest)?;
+    let path = resolve_remote_path(project_root, Some(&relative_path));
     let command = format!(
         "sh -lc 'if [ -f {path} ]; then base64 -w0 < {path}; else exit 4; fi'",
         path = shell_escape(&path)
@@ -97,7 +109,7 @@ pub async fn read_file(
     let content = String::from_utf8(slice.to_vec())?;
 
     Ok(FileResponse {
-        path,
+        path: relative_path,
         content,
         truncated,
     })
@@ -108,7 +120,9 @@ pub async fn save_file(
     project_root: &str,
     request: SaveFileRequest,
 ) -> Result<SaveFileResponse, SessionError> {
-    let path = resolve_remote_path(project_root, Some(&request.path));
+    let relative_path = normalize_worktree_relative_path(project_root, &request.path)
+        .map_err(SessionError::InvalidRequest)?;
+    let path = resolve_remote_path(project_root, Some(&relative_path));
     let encoded = base64::engine::general_purpose::STANDARD.encode(request.content.as_bytes());
     let directory = std::path::Path::new(&path)
         .parent()
@@ -124,7 +138,7 @@ pub async fn save_file(
     run_ssh_capture(target, &command).await?;
 
     Ok(SaveFileResponse {
-        path,
+        path: relative_path,
         bytes_written: request.content.len(),
     })
 }

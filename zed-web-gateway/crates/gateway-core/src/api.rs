@@ -89,7 +89,7 @@ pub struct FileResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SaveFileRequest {
     pub path: String,
     pub content: String,
