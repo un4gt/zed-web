@@ -1,0 +1,24 @@
+.event-log {
+  min-height: 0;
+  overflow: auto;
+  counter-reset: event;
+}
+
+.event-log li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid var(--border-muted);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 7px 0;
+  overflow-wrap: anywhere;
+}
+
+.event-log li::before {
+  counter-increment: event;
+  content: counter(event, decimal-leading-zero);
+  color: var(--text-disabled);
+}

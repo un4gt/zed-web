@@ -1,0 +1,120 @@
+.bottom-panel {
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+  min-height: 0;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg-editor);
+}
+
+.bottom-panel.is-hidden {
+  display: none;
+}
+
+.bottom-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-panel);
+  padding: 0 8px 0 12px;
+}
+
+.bottom-panel-tab {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.bottom-panel-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.terminal-surface {
+  min-height: 0;
+  overflow: hidden;
+  padding: 7px 9px;
+}
+
+.terminal-surface .xterm {
+  height: 100%;
+}
+
+.debug-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 34%) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.debug-breakpoints {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-right: 1px solid var(--border-muted);
+}
+
+.debug-breakpoints h2 {
+  margin: 0;
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 10px 8px;
+}
+
+.debug-breakpoints p {
+  display: grid;
+  margin: 0;
+  place-items: center;
+  color: var(--text-subtle);
+}
+
+.debug-actions {
+  display: grid;
+  place-content: center;
+  justify-items: start;
+  gap: 10px;
+}
+
+.debug-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.agent-dock {
+  background: var(--bg-panel-muted);
+}
+
+.agent-composer-placeholder {
+  flex: 1;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  padding: 18px 14px;
+}
+
+.agent-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  border-top: 1px solid var(--border-muted);
+  color: var(--text-muted);
+  padding: 0 8px;
+}
+
+.agent-footer span:nth-of-type(1) {
+  margin-left: auto;
+}
