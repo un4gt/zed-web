@@ -1,6 +1,6 @@
-# Zed Web Deployment
+# zew Deployment
 
-This deployment runs Zed Web as one container:
+This deployment runs zew as one container:
 
 - Caddy serves the built React frontend on container port `80`.
 - Caddy proxies `/api/*` and websocket routes to `gateway-server`.
@@ -39,7 +39,7 @@ There are two ports with different jobs:
 Recommended values:
 
 ```dotenv
-HOST_PORT=8080
+HOST_PORT=4173
 GATEWAY_HOST=127.0.0.1
 GATEWAY_PORT=8080
 ```
@@ -64,7 +64,7 @@ Example `.env`:
 
 ```dotenv
 ZED_WEB_IMAGE=ghcr.io/un4gt/zed-web:latest
-HOST_PORT=8080
+HOST_PORT=4173
 GATEWAY_HOST=127.0.0.1
 GATEWAY_PORT=8080
 ZED_WEB_DATA_PATH=./data
@@ -101,7 +101,7 @@ docker compose logs -f zed-web
 Open:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:4173
 ```
 
 or, if you changed `HOST_PORT`:
@@ -129,7 +129,7 @@ docker compose up -d zed-web
 Verify the new backend is active:
 
 ```bash
-curl -fsS http://127.0.0.1:${HOST_PORT:-8080}/api/health
+curl -fsS http://127.0.0.1:${HOST_PORT:-4173}/api/health
 ```
 
 Expected response:
@@ -141,7 +141,7 @@ Expected response:
 The gateway should return JSON errors, not HTML or plain text. For example:
 
 ```bash
-curl -i -X POST "http://127.0.0.1:${HOST_PORT:-8080}/api/sessions" \
+curl -i -X POST "http://127.0.0.1:${HOST_PORT:-4173}/api/sessions" \
   -H "Content-Type: application/json" \
   -d '{"host":"","project_path":"/tmp","remote_server":{"mode":"disabled"}}'
 ```
@@ -160,11 +160,13 @@ When using the Docker deployment page, leave `Gateway URL` as the same origin un
 http://<server-ip>:<HOST_PORT>
 ```
 
-For local source preview on Rsbuild port `4173`, the UI defaults the gateway to:
+For local source preview on Rsbuild port `4173`, Rsbuild proxies `/api/*` to:
 
 ```text
 http://127.0.0.1:8080
 ```
+
+The web UI itself defaults `Gateway URL` to the same origin as the page. In Docker this keeps API and websocket traffic on `http://<server-ip>:<HOST_PORT>` and lets Caddy proxy it internally. In local source preview this works because the Rsbuild server proxies `/api/*`.
 
 Use these SSH host values depending on where the gateway container should connect:
 
@@ -175,7 +177,7 @@ Use these SSH host values depending on where the gateway container should connec
 Example for connecting from the container to the Docker host as root:
 
 ```text
-Gateway URL: http://127.0.0.1:8080
+Gateway URL: http://<server-ip>:<HOST_PORT>
 SSH host: host.docker.internal
 SSH user: root
 Project path: /tmp
@@ -252,7 +254,7 @@ docker compose up -d zed-web
 - Confirm `/api/health` goes through the same public URL as the frontend:
 
 ```bash
-curl -i http://127.0.0.1:${HOST_PORT:-8080}/api/health
+curl -i http://127.0.0.1:${HOST_PORT:-4173}/api/health
 ```
 
 - Confirm Caddy is serving the frontend and proxying `/api/*`:

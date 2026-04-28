@@ -1,4 +1,4 @@
-# Zed Web Deployment
+# zew Deployment
 
 ## Docker
 
@@ -30,7 +30,7 @@ docker compose up -d
 Then open:
 
 ```text
-http://localhost:${HOST_PORT:-8080}
+http://localhost:${HOST_PORT:-4173}
 ```
 
 See `DEPLOY.md` for hosted-image deployment, port customization, and troubleshooting.
