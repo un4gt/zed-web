@@ -14,7 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut next_buffer_id = 100_u64;
     let mut worktree_id = 1_u64;
     let mut root = std::env::current_dir()?;
-    let mut opened = HashMap::<u64, PathBuf>::new();
+    let mut opened = HashMap::<u64, OpenedFakeBuffer>::new();
+    let mut path_versions = HashMap::<PathBuf, Vec<messages::VectorClockEntry>>::new();
 
     loop {
         let envelope = read_envelope(&mut stdin).await?;
@@ -53,7 +54,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let content = tokio::fs::read_to_string(&file_path).await?;
                 let buffer_id = next_buffer_id;
                 next_buffer_id += 1;
-                opened.insert(buffer_id, file_path);
+                let saved_version = path_versions
+                    .entry(file_path.clone())
+                    .or_insert_with(|| {
+                        vec![messages::VectorClockEntry {
+                            replica_id: 1,
+                            timestamp: 1,
+                        }]
+                    })
+                    .clone();
+                opened.insert(
+                    buffer_id,
+                    OpenedFakeBuffer {
+                        path: file_path,
+                        saved_version: saved_version.clone(),
+                    },
+                );
 
                 write_envelope(
                     &mut stdout,
@@ -81,10 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }),
                                 base_text: content,
                                 line_ending: 0,
-                                saved_version: vec![messages::VectorClockEntry {
-                                    replica_id: 1,
-                                    timestamp: 1,
-                                }],
+                                saved_version,
                                 saved_mtime: None,
                             },
                         )),
@@ -113,18 +126,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 next_message_id += 1;
             }
             Some(messages::envelope::Payload::UpdateBuffer(message)) => {
-                let Some(path) = opened.get(&message.buffer_id).cloned() else {
+                let Some(buffer) = opened.get_mut(&message.buffer_id) else {
                     continue;
                 };
-                if let Some(messages::operation::Variant::Edit(edit)) = message
-                    .operations
-                    .first()
-                    .and_then(|operation| operation.variant.clone())
-                {
-                    if let Some(new_text) = edit.new_text.first() {
-                        tokio::fs::write(path, new_text).await?;
+                let mut content = tokio::fs::read_to_string(&buffer.path).await?;
+                for operation in message.operations {
+                    if let Some(messages::operation::Variant::Edit(edit)) = operation.variant {
+                        apply_fake_edit(&mut content, &edit)?;
+                        buffer.saved_version =
+                            increment_version(&buffer.saved_version, edit.replica_id);
                     }
                 }
+                tokio::fs::write(&buffer.path, content).await?;
+                path_versions.insert(buffer.path.clone(), buffer.saved_version.clone());
 
                 write_envelope(
                     &mut stdout,
@@ -139,7 +153,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     messages::BufferSaved {
                         project_id: message.project_id,
                         buffer_id: message.buffer_id,
-                        version: message.version,
+                        version: opened
+                            .get(&message.buffer_id)
+                            .map(|buffer| buffer.saved_version.clone())
+                            .unwrap_or(message.version),
                         mtime: None,
                     }
                     .into_envelope(next_message_id, Some(envelope.id)),
@@ -162,6 +179,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
+}
+
+struct OpenedFakeBuffer {
+    path: PathBuf,
+    saved_version: Vec<messages::VectorClockEntry>,
+}
+
+fn apply_fake_edit(
+    content: &mut String,
+    edit: &messages::Edit,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut replacements = edit
+        .ranges
+        .iter()
+        .zip(edit.new_text.iter())
+        .map(|(range, text)| (range.start as usize, range.end as usize, text))
+        .collect::<Vec<_>>();
+    replacements.sort_by(|left, right| right.0.cmp(&left.0));
+
+    for (start, end, text) in replacements {
+        if start > end
+            || end > content.len()
+            || !content.is_char_boundary(start)
+            || !content.is_char_boundary(end)
+        {
+            return Err("invalid fake proxy edit range".into());
+        }
+        content.replace_range(start..end, text);
+    }
+
+    Ok(())
+}
+
+fn increment_version(
+    current_version: &[messages::VectorClockEntry],
+    replica_id: u32,
+) -> Vec<messages::VectorClockEntry> {
+    let mut version = current_version.to_vec();
+    if let Some(entry) = version
+        .iter_mut()
+        .find(|entry| entry.replica_id == replica_id)
+    {
+        entry.timestamp += 1;
+    } else {
+        version.push(messages::VectorClockEntry {
+            replica_id,
+            timestamp: 1,
+        });
+    }
+    version
 }
 
 async fn read_envelope(

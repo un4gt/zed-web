@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use gateway_core::api::{BufferChangeBatch, ResourceVersion, ResourceVersionScheme};
 use gateway_core::error::SessionError;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -225,6 +226,49 @@ impl ZedProxyClient {
         Ok(saved)
     }
 
+    pub async fn apply_batches_and_save(
+        &self,
+        buffer: &OpenedBuffer,
+        batches: &[BufferChangeBatch],
+        expected_content_length: usize,
+    ) -> Result<(BufferSaved, String), SessionError> {
+        let (operations, next_content, next_version) =
+            operations_from_batches(&buffer.base_text, &buffer.saved_version, batches)?;
+        if next_content.len() != expected_content_length {
+            return Err(SessionError::InvalidRequest(format!(
+                "expected content length {expected_content_length}, got {}",
+                next_content.len()
+            )));
+        }
+
+        if !operations.is_empty() {
+            let _: messages::Ack = self
+                .request(UpdateBuffer {
+                    project_id: REMOTE_SERVER_PROJECT_ID,
+                    buffer_id: buffer.buffer_id,
+                    operations,
+                })
+                .await?;
+        }
+
+        let saved: BufferSaved = self
+            .request(SaveBuffer {
+                project_id: REMOTE_SERVER_PROJECT_ID,
+                buffer_id: buffer.buffer_id,
+                version: next_version,
+                new_path: None,
+            })
+            .await?;
+        self.cache_opened_buffer(OpenedBuffer {
+            buffer_id: buffer.buffer_id,
+            file: buffer.file.clone(),
+            base_text: next_content.clone(),
+            saved_version: saved.version.clone(),
+        })
+        .await;
+        Ok((saved, next_content))
+    }
+
     async fn cached_opened_buffer(&self, buffer_id: u64) -> Option<OpenedBuffer> {
         let state = self.state.lock().await;
         state.opened_buffers.get(&buffer_id).cloned()
@@ -362,6 +406,123 @@ impl ZedProxyClient {
 
         Ok(envelope)
     }
+}
+
+impl OpenedBuffer {
+    pub fn resource_version(&self) -> Result<ResourceVersion, SessionError> {
+        encode_vector_clock_resource_version(&self.saved_version)
+    }
+}
+
+pub fn encode_vector_clock_resource_version(
+    entries: &[messages::VectorClockEntry],
+) -> Result<ResourceVersion, SessionError> {
+    let value = serde_json::to_string(
+        &entries
+            .iter()
+            .map(|entry| (entry.replica_id, entry.timestamp))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| SessionError::Decode(error.to_string()))?;
+    Ok(ResourceVersion {
+        scheme: ResourceVersionScheme::ZedVectorClock,
+        value,
+    })
+}
+
+fn operations_from_batches(
+    base_text: &str,
+    base_version: &[messages::VectorClockEntry],
+    batches: &[BufferChangeBatch],
+) -> Result<
+    (
+        Vec<messages::Operation>,
+        String,
+        Vec<messages::VectorClockEntry>,
+    ),
+    SessionError,
+> {
+    let mut text = base_text.to_string();
+    let mut version = base_version.to_vec();
+    let mut operations = Vec::new();
+    let mut previous_seq = 0_u64;
+
+    for batch in batches {
+        if batch.seq <= previous_seq {
+            return Err(SessionError::InvalidRequest(format!(
+                "buffer change batches must be ordered by increasing seq: {} after {}",
+                batch.seq, previous_seq
+            )));
+        }
+        previous_seq = batch.seq;
+
+        if batch.changes.is_empty() {
+            continue;
+        }
+
+        let next_version = increment_version(&version, 1);
+        let lamport_timestamp = next_version
+            .iter()
+            .find(|entry| entry.replica_id == 1)
+            .map(|entry| entry.timestamp)
+            .unwrap_or(1);
+        let mut ranges = Vec::with_capacity(batch.changes.len());
+        let mut new_text = Vec::with_capacity(batch.changes.len());
+
+        for change in &batch.changes {
+            let start = utf16_offset_to_byte_index(&text, change.range_offset_utf16)?;
+            let end_utf16 = change
+                .range_offset_utf16
+                .checked_add(change.range_length_utf16)
+                .ok_or_else(|| {
+                    SessionError::InvalidRequest("edit range length overflows".into())
+                })?;
+            let end = utf16_offset_to_byte_index(&text, end_utf16)?;
+            ranges.push(messages::Range {
+                start: start as u64,
+                end: end as u64,
+            });
+            new_text.push(change.text.clone());
+            text.replace_range(start..end, &change.text);
+        }
+
+        operations.push(messages::Operation {
+            variant: Some(messages::operation::Variant::Edit(messages::Edit {
+                replica_id: 1,
+                lamport_timestamp,
+                version: version.clone(),
+                ranges,
+                new_text,
+            })),
+        });
+        version = next_version;
+    }
+
+    Ok((operations, text, version))
+}
+
+fn utf16_offset_to_byte_index(content: &str, target_offset: usize) -> Result<usize, SessionError> {
+    let mut utf16_offset = 0_usize;
+
+    for (byte_index, character) in content.char_indices() {
+        if utf16_offset == target_offset {
+            return Ok(byte_index);
+        }
+        utf16_offset += character.len_utf16();
+        if utf16_offset > target_offset {
+            return Err(SessionError::InvalidRequest(
+                "edit offset splits a UTF-16 surrogate pair".into(),
+            ));
+        }
+    }
+
+    if utf16_offset == target_offset {
+        return Ok(content.len());
+    }
+
+    Err(SessionError::InvalidRequest(
+        "edit offset is outside the document".into(),
+    ))
 }
 
 pub trait IntoEnvelope {

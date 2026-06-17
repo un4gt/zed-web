@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gateway_core::api::{
-    CreateSessionRequest, FileResponse, RemoteServerUpdateMode, SaveFileRequest, SaveFileResponse,
-    SessionSnapshot, TreeResponse,
+    BufferSaveCommand, BufferSaveCompletePayload, BufferSyncCommand, BufferSyncCompletePayload,
+    BufferSyncResponseItem, BufferSyncStatus, CreateSessionRequest, FileResponse,
+    RemoteServerUpdateMode, ResourceVersion, ResourceVersionScheme, SaveFileRequest,
+    SaveFileResponse, SessionSnapshot, TreeResponse,
 };
 use gateway_core::error::SessionError;
 use gateway_core::events::GatewayEvent;
@@ -13,6 +15,7 @@ use gateway_ssh::proxy::spawn_proxy;
 use gateway_ssh::terminal::{TerminalProcess, open_terminal};
 use gateway_ssh::transport;
 use gateway_zed_proxy::client::ZedProxyClient;
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock, broadcast};
@@ -22,6 +25,7 @@ use uuid::Uuid;
 
 use super::managed_remote::prepare_managed_remote_binary;
 use super::remote_version::resolve_remote_server_policy;
+use crate::text_edits::apply_text_change_batches;
 
 const EVENT_BUFFER: usize = 256;
 const FILE_PROXY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -32,6 +36,15 @@ pub struct SessionHandle {
     inner: RwLock<SessionState>,
     proxy: Mutex<Option<Child>>,
     zed_client: Mutex<Option<ZedProxyClient>>,
+}
+
+pub struct OpenBufferResult {
+    pub path: String,
+    pub content: String,
+    pub bytes_read: usize,
+    pub truncated: bool,
+    pub read_only: bool,
+    pub resource_version: ResourceVersion,
 }
 
 fn with_stage(stage: &'static str, error: SessionError) -> SessionError {
@@ -174,10 +187,16 @@ impl SessionHandle {
     pub async fn list_directory(
         &self,
         requested_path: Option<String>,
+        requested_depth: Option<usize>,
     ) -> Result<TreeResponse, SessionError> {
         let (target, project_path) = self.target_and_path().await;
-        let tree =
-            transport::list_directory(&target, &project_path, requested_path.as_deref()).await?;
+        let tree = transport::list_directory(
+            &target,
+            &project_path,
+            requested_path.as_deref(),
+            requested_depth,
+        )
+        .await?;
         self.touch_heartbeat().await;
         Ok(tree)
     }
@@ -206,6 +225,42 @@ impl SessionHandle {
         };
         self.touch_heartbeat().await;
         Ok(file)
+    }
+
+    pub async fn open_buffer(
+        &self,
+        requested_path: &str,
+        max_bytes: usize,
+    ) -> Result<OpenBufferResult, SessionError> {
+        let buffer = match timeout(
+            FILE_PROXY_TIMEOUT,
+            self.open_buffer_via_proxy(requested_path, max_bytes),
+        )
+        .await
+        {
+            Ok(Ok(buffer)) => buffer,
+            Ok(Err(error)) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %requested_path,
+                    %error,
+                    "zed proxy buffer open failed; falling back to ssh file read"
+                );
+                self.open_buffer_via_transport(requested_path, max_bytes)
+                    .await?
+            }
+            Err(_) => {
+                warn!(
+                    session_id = %self.id,
+                    path = %requested_path,
+                    "zed proxy buffer open timed out; falling back to ssh file read"
+                );
+                self.open_buffer_via_transport(requested_path, max_bytes)
+                    .await?
+            }
+        };
+        self.touch_heartbeat().await;
+        Ok(buffer)
     }
 
     pub async fn save_file(
@@ -244,6 +299,107 @@ impl SessionHandle {
         .await;
 
         Ok(response)
+    }
+
+    pub async fn save_buffer(
+        &self,
+        request: BufferSaveCommand,
+    ) -> Result<BufferSaveCompletePayload, SessionError> {
+        let response = match request.base_resource_version.scheme {
+            ResourceVersionScheme::ZedVectorClock => self.save_buffer_via_proxy(request).await?,
+            ResourceVersionScheme::SshStat => self.save_buffer_via_transport(request).await?,
+        };
+
+        if let BufferSaveCompletePayload::Saved { path, .. } = &response {
+            self.touch_heartbeat().await;
+            self.send_event(GatewayEvent::SessionState {
+                session_id: self.id,
+                state: ConnectionState::Ready,
+                detail: format!("saved {path}"),
+            })
+            .await;
+        }
+
+        Ok(response)
+    }
+
+    pub async fn sync_buffers(
+        &self,
+        request: BufferSyncCommand,
+    ) -> Result<BufferSyncCompletePayload, SessionError> {
+        let mut buffers = Vec::with_capacity(request.buffers.len());
+
+        for buffer in request.buffers {
+            let current_resource_version = match buffer.base_resource_version.scheme {
+                ResourceVersionScheme::ZedVectorClock => {
+                    self.current_proxy_resource_version(&buffer.path).await
+                }
+                ResourceVersionScheme::SshStat => {
+                    self.current_transport_resource_version(&buffer.path).await
+                }
+            };
+
+            match current_resource_version {
+                Ok(current) if current == buffer.base_resource_version => {
+                    buffers.push(BufferSyncResponseItem {
+                        path: buffer.path,
+                        status: BufferSyncStatus::Unchanged,
+                        current_resource_version: Some(current),
+                    });
+                }
+                Ok(current) => {
+                    buffers.push(BufferSyncResponseItem {
+                        path: buffer.path,
+                        status: BufferSyncStatus::RemoteChanged,
+                        current_resource_version: Some(current),
+                    });
+                }
+                Err(error) => {
+                    warn!(
+                        session_id = %self.id,
+                        path = %buffer.path,
+                        dirty = buffer.dirty,
+                        last_seq = buffer.last_seq,
+                        %error,
+                        "buffer sync failed for path"
+                    );
+                    buffers.push(BufferSyncResponseItem {
+                        path: buffer.path,
+                        status: BufferSyncStatus::Missing,
+                        current_resource_version: None,
+                    });
+                }
+            }
+        }
+
+        self.touch_heartbeat().await;
+        Ok(BufferSyncCompletePayload { buffers })
+    }
+
+    pub async fn stream_file<F>(
+        &self,
+        requested_path: &str,
+        initial_chunk_bytes: usize,
+        chunk_bytes: usize,
+        max_bytes: usize,
+        on_chunk: F,
+    ) -> Result<transport::StreamedFileSummary, SessionError>
+    where
+        F: FnMut(transport::StreamedFileChunk) -> Result<(), SessionError>,
+    {
+        let (target, project_path) = self.target_and_path().await;
+        let summary = transport::stream_file(
+            &target,
+            &project_path,
+            requested_path,
+            initial_chunk_bytes,
+            chunk_bytes,
+            max_bytes,
+            on_chunk,
+        )
+        .await?;
+        self.touch_heartbeat().await;
+        Ok(summary)
     }
 
     pub async fn open_terminal(
@@ -460,12 +616,71 @@ impl SessionHandle {
         })
     }
 
+    async fn open_buffer_via_proxy(
+        &self,
+        requested_path: &str,
+        max_bytes: usize,
+    ) -> Result<OpenBufferResult, SessionError> {
+        let inner = self.inner.read().await;
+        let worktree_id = inner
+            .worktree_id
+            .ok_or_else(|| SessionError::SshCommand("missing remote worktree".into()))?;
+        let relative_path = normalize_worktree_relative_path(&inner.project_path, requested_path)
+            .map_err(SessionError::InvalidRequest)?;
+        drop(inner);
+
+        let mut client_slot = self.zed_client.lock().await;
+        let client = client_slot
+            .as_mut()
+            .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
+        let buffer = client
+            .open_buffer_by_path(worktree_id, &relative_path)
+            .await?;
+        let path = buffer
+            .file
+            .as_ref()
+            .map(|file| file.path.clone())
+            .unwrap_or(relative_path);
+        let (content, truncated) = truncate_utf8(&buffer.base_text, max_bytes);
+        let bytes_read = content.len();
+
+        Ok(OpenBufferResult {
+            path,
+            content,
+            bytes_read,
+            truncated,
+            read_only: truncated,
+            resource_version: buffer.resource_version()?,
+        })
+    }
+
     async fn read_file_via_transport(
         &self,
         requested_path: &str,
     ) -> Result<FileResponse, SessionError> {
         let (target, project_path) = self.target_and_path().await;
         transport::read_file(&target, &project_path, requested_path).await
+    }
+
+    async fn open_buffer_via_transport(
+        &self,
+        requested_path: &str,
+        max_bytes: usize,
+    ) -> Result<OpenBufferResult, SessionError> {
+        let file = self.read_file_via_transport(requested_path).await?;
+        let resource_version = ssh_stat_resource_version(&file.content);
+        let (content, max_truncated) = truncate_utf8(&file.content, max_bytes);
+        let truncated = file.truncated || max_truncated;
+        let bytes_read = content.len();
+
+        Ok(OpenBufferResult {
+            path: file.path,
+            content,
+            bytes_read,
+            truncated,
+            read_only: truncated,
+            resource_version,
+        })
     }
 
     async fn save_file_via_proxy(
@@ -494,12 +709,127 @@ impl SessionHandle {
         })
     }
 
+    async fn save_buffer_via_proxy(
+        &self,
+        request: BufferSaveCommand,
+    ) -> Result<BufferSaveCompletePayload, SessionError> {
+        let inner = self.inner.read().await;
+        let worktree_id = inner
+            .worktree_id
+            .ok_or_else(|| SessionError::SshCommand("missing remote worktree".into()))?;
+        let relative_path = normalize_worktree_relative_path(&inner.project_path, &request.path)
+            .map_err(SessionError::InvalidRequest)?;
+        drop(inner);
+
+        let mut client_slot = self.zed_client.lock().await;
+        let client = client_slot
+            .as_mut()
+            .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
+        let buffer = client
+            .open_buffer_by_path(worktree_id, &relative_path)
+            .await?;
+        let current_resource_version = buffer.resource_version()?;
+
+        if current_resource_version != request.base_resource_version {
+            return Ok(BufferSaveCompletePayload::Conflict {
+                path: relative_path,
+                current_resource_version: Some(current_resource_version),
+                message: "remote buffer changed since it was opened".into(),
+            });
+        }
+
+        let (saved, next_content) = client
+            .apply_batches_and_save(&buffer, &request.batches, request.expected_content_length)
+            .await?;
+        let applied_seq = request
+            .batches
+            .iter()
+            .map(|batch| batch.seq)
+            .max()
+            .unwrap_or(0);
+        Ok(BufferSaveCompletePayload::Saved {
+            path: relative_path,
+            applied_seq,
+            bytes_written: next_content.len(),
+            resource_version: gateway_zed_proxy::client::encode_vector_clock_resource_version(
+                &saved.version,
+            )?,
+        })
+    }
+
     async fn save_file_via_transport(
         &self,
         request: SaveFileRequest,
     ) -> Result<SaveFileResponse, SessionError> {
         let (target, project_path) = self.target_and_path().await;
         transport::save_file(&target, &project_path, request).await
+    }
+
+    async fn save_buffer_via_transport(
+        &self,
+        request: BufferSaveCommand,
+    ) -> Result<BufferSaveCompletePayload, SessionError> {
+        let current = self.read_file_via_transport(&request.path).await?;
+        let current_resource_version = ssh_stat_resource_version(&current.content);
+        if current_resource_version != request.base_resource_version {
+            return Ok(BufferSaveCompletePayload::Conflict {
+                path: current.path,
+                current_resource_version: Some(current_resource_version),
+                message: "remote file changed since it was opened".into(),
+            });
+        }
+
+        let next_content = apply_text_change_batches(&current.content, &request.batches)?;
+        validate_expected_content_length(&next_content, request.expected_content_length)?;
+        let response = self
+            .save_file_via_transport(SaveFileRequest {
+                path: current.path,
+                content: next_content.clone(),
+            })
+            .await?;
+        let applied_seq = request
+            .batches
+            .iter()
+            .map(|batch| batch.seq)
+            .max()
+            .unwrap_or(0);
+
+        Ok(BufferSaveCompletePayload::Saved {
+            path: response.path,
+            applied_seq,
+            bytes_written: response.bytes_written,
+            resource_version: ssh_stat_resource_version(&next_content),
+        })
+    }
+
+    async fn current_proxy_resource_version(
+        &self,
+        requested_path: &str,
+    ) -> Result<ResourceVersion, SessionError> {
+        let inner = self.inner.read().await;
+        let worktree_id = inner
+            .worktree_id
+            .ok_or_else(|| SessionError::SshCommand("missing remote worktree".into()))?;
+        let relative_path = normalize_worktree_relative_path(&inner.project_path, requested_path)
+            .map_err(SessionError::InvalidRequest)?;
+        drop(inner);
+
+        let mut client_slot = self.zed_client.lock().await;
+        let client = client_slot
+            .as_mut()
+            .ok_or_else(|| SessionError::SshCommand("missing zed proxy client".into()))?;
+        client
+            .open_buffer_by_path(worktree_id, &relative_path)
+            .await?
+            .resource_version()
+    }
+
+    async fn current_transport_resource_version(
+        &self,
+        requested_path: &str,
+    ) -> Result<ResourceVersion, SessionError> {
+        let file = self.read_file_via_transport(requested_path).await?;
+        Ok(ssh_stat_resource_version(&file.content))
     }
 
     async fn touch_heartbeat(&self) {
@@ -512,6 +842,41 @@ impl SessionHandle {
             warn!(session_id = %self.id, "dropped gateway event without listeners");
         }
     }
+}
+
+fn truncate_utf8(content: &str, max_bytes: usize) -> (String, bool) {
+    if content.len() <= max_bytes {
+        return (content.to_string(), false);
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    (content[..end].to_string(), true)
+}
+
+fn ssh_stat_resource_version(content: &str) -> ResourceVersion {
+    let digest = Sha256::digest(content.as_bytes());
+    ResourceVersion {
+        scheme: ResourceVersionScheme::SshStat,
+        value: format!("len:{}:sha256:{digest:x}", content.len()),
+    }
+}
+
+fn validate_expected_content_length(
+    content: &str,
+    expected_content_length: usize,
+) -> Result<(), SessionError> {
+    if content.len() == expected_content_length {
+        return Ok(());
+    }
+
+    Err(SessionError::InvalidRequest(format!(
+        "expected content length {expected_content_length}, got {}",
+        content.len()
+    )))
 }
 
 fn validate_request(request: &CreateSessionRequest) -> Result<(), SessionError> {
