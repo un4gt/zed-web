@@ -20,6 +20,11 @@ docker compose pull
 docker compose up -d
 ```
 
+Before starting, edit `.env` and set both `ZEW_USERNAME` and `ZEW_PASSWORD`.
+The Docker entrypoint refuses to start without these credentials, and every
+HTTP entrypoint uses them: the web page, frontend chunks, Monaco assets, API
+routes, and websocket handshakes.
+
 If you are building from source instead of using a published image, run:
 
 ```bash
@@ -91,6 +96,8 @@ Common environment variables:
 - `HOST_PORT`
 - `GATEWAY_HOST`
 - `GATEWAY_PORT`
+- `ZEW_USERNAME`
+- `ZEW_PASSWORD`
 - `FRONTEND_PORT`
 - `ZED_WEB_DATA_DIR`
 
@@ -99,6 +106,7 @@ Notes:
 - `ZED_WEB_IMAGE` selects the Docker image to run.
 - `HOST_PORT` is the public port published on the Docker host.
 - `GATEWAY_PORT` is the internal gateway port inside the container.
+- `ZEW_USERNAME` and `ZEW_PASSWORD` are required for Docker deployments.
 - `FRONTEND_PORT` is only used by the bare-install preview flow, not by the Docker image.
 
 ## Remote Server Version Policy

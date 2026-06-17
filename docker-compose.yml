@@ -12,6 +12,8 @@ services:
     environment:
       GATEWAY_HOST: ${GATEWAY_HOST:-127.0.0.1}
       GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      ZEW_USERNAME: "${ZEW_USERNAME:?set ZEW_USERNAME in .env before starting zed-web}"
+      ZEW_PASSWORD: "${ZEW_PASSWORD:?set ZEW_PASSWORD in .env before starting zed-web}"
       ZED_WEB_DATA_DIR: /var/lib/zed-web
       SSH_AUTH_SOCK: /ssh-agent
     volumes:
@@ -21,7 +23,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/api/health >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS -u \"$${ZEW_USERNAME}:$${ZEW_PASSWORD}\" http://127.0.0.1/api/health >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

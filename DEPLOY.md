@@ -2,8 +2,8 @@
 
 This deployment runs zew as one container:
 
-- Caddy serves the built React frontend on container port `80`.
-- Caddy proxies `/api/*` and websocket routes to `gateway-server`.
+- Caddy listens on container port `80` and reverse-proxies all HTTP traffic to `gateway-server`.
+- `gateway-server` serves the built React frontend, static chunks, Monaco assets, API routes, and websocket routes behind one authentication layer.
 - `gateway-server` listens only inside the container on `127.0.0.1:${GATEWAY_PORT}`.
 - The gateway opens outbound SSH connections to the target machine.
 
@@ -29,6 +29,15 @@ cp .env.example .env
 mkdir -p data
 ```
 
+Edit `.env` before starting and set:
+
+```dotenv
+ZEW_USERNAME=admin
+ZEW_PASSWORD=change-this-password
+```
+
+The container refuses to start if either value is missing or empty.
+
 ## Port Model
 
 There are two ports with different jobs:
@@ -47,7 +56,7 @@ GATEWAY_PORT=8080
 Why `GATEWAY_HOST=127.0.0.1`:
 
 - Caddy and `gateway-server` run in the same container.
-- Caddy proxies `/api/*` to `127.0.0.1:${GATEWAY_PORT}`.
+- Caddy proxies all public HTTP traffic to `127.0.0.1:${GATEWAY_PORT}`.
 - The backend does not need to be exposed separately on the container network.
 
 If you want the app reachable at `http://host:8888`, change only:
@@ -67,6 +76,8 @@ ZED_WEB_IMAGE=ghcr.io/un4gt/zed-web:latest
 HOST_PORT=4173
 GATEWAY_HOST=127.0.0.1
 GATEWAY_PORT=8080
+ZEW_USERNAME=admin
+ZEW_PASSWORD=change-this-password
 ZED_WEB_DATA_PATH=./data
 ZED_WEB_SSH_PATH=${HOME}/.ssh
 ```
@@ -77,10 +88,16 @@ Variables:
 - `HOST_PORT`: public HTTP port on the Docker host.
 - `GATEWAY_HOST`: internal gateway bind address. Use `127.0.0.1` for the bundled image.
 - `GATEWAY_PORT`: internal gateway port. Default `8080`.
+- `ZEW_USERNAME`: HTTP Basic Auth username for the whole web entrypoint.
+- `ZEW_PASSWORD`: HTTP Basic Auth password for the whole web entrypoint.
 - `ZED_WEB_DATA_PATH`: host directory for managed remote-server cache and runtime data.
 - `ZED_WEB_SSH_PATH`: host SSH config/key directory mounted read-only at `/root/.ssh`.
 
 `FRONTEND_PORT` is not used by the Docker image. It only applies to the bare local preview scripts.
+
+Authentication covers the initial HTML, frontend chunks, `/vs/*` Monaco assets,
+`/api/*` routes, and websocket upgrade requests. The browser will show the
+standard username/password prompt on first access.
 
 ## Start From Published Image
 
@@ -129,7 +146,8 @@ docker compose up -d zed-web
 Verify the new backend is active:
 
 ```bash
-curl -fsS http://127.0.0.1:${HOST_PORT:-4173}/api/health
+curl -fsS -u "$ZEW_USERNAME:$ZEW_PASSWORD" \
+  http://127.0.0.1:${HOST_PORT:-4173}/api/health
 ```
 
 Expected response:
@@ -142,6 +160,7 @@ The gateway should return JSON errors, not HTML or plain text. For example:
 
 ```bash
 curl -i -X POST "http://127.0.0.1:${HOST_PORT:-4173}/api/sessions" \
+  -u "$ZEW_USERNAME:$ZEW_PASSWORD" \
   -H "Content-Type: application/json" \
   -d '{"host":"","project_path":"/tmp","remote_server":{"mode":"disabled"}}'
 ```
@@ -254,10 +273,11 @@ docker compose up -d zed-web
 - Confirm `/api/health` goes through the same public URL as the frontend:
 
 ```bash
-curl -i http://127.0.0.1:${HOST_PORT:-4173}/api/health
+curl -i -u "$ZEW_USERNAME:$ZEW_PASSWORD" \
+  http://127.0.0.1:${HOST_PORT:-4173}/api/health
 ```
 
-- Confirm Caddy is serving the frontend and proxying `/api/*`:
+- Confirm Caddy is proxying the public web entrypoint to the gateway:
 
 ```bash
 docker compose logs -f zed-web
