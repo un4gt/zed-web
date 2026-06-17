@@ -24,7 +24,13 @@ function TabStrip({ activePath, bufferMeta, iconTheme, onCloseTab, onSelectTab, 
               >
                 <FileIcon src={fileIconUrlForPath(tab, iconTheme)} />
                 <span>{fileName(tab)}</span>
-                {meta?.dirty ? <span className="dirty-dot" aria-label="Unsaved changes" /> : null}
+                {meta?.conflict ? (
+                  <span className="conflict-badge" aria-label="Save conflict" title="Save conflict">
+                    conflict
+                  </span>
+                ) : meta?.dirty ? (
+                  <span className="dirty-dot" aria-label="Unsaved changes" />
+                ) : null}
               </button>
               <IconButton
                 icon="close"

@@ -5,16 +5,17 @@ export const APP_MENU_DEFINITIONS = [
     id: 'zew',
     label: 'Zew',
     items: [
-      { label: 'About zew', actionId: 'about' },
-      { label: 'Check for Updates: UI', actionId: 'checkUiUpdates' },
-      { label: 'Check for Updates: remote-zed-server', actionId: 'checkRemoteServerUpdates' },
+      { label: 'About zew', commandId: 'zed.about' },
+      { label: 'Check for Updates: UI', commandId: 'zed.checkUiUpdates' },
+      { label: 'Check for Updates: remote-zed-server', commandId: 'zed.checkRemoteServerUpdates' },
       separator,
-      { label: 'Open Settings', actionId: 'openSettings' },
-      { label: 'Open Settings File', actionId: 'openSettingsFile' },
-      { label: 'Select Theme...', actionId: 'selectTheme' },
-      { label: 'Select Icon Theme...', actionId: 'selectIconTheme' },
+      { label: 'Open Settings', commandId: 'zed.openSettings' },
+      { label: 'Open Settings File', commandId: 'zed.openSettingsFile' },
+      { label: 'Open Keymap', commandId: 'zed.openKeymap', shortcut: 'Ctrl+K Ctrl+S' },
+      { label: 'Select Theme...', commandId: 'themeSelector.toggle' },
+      { label: 'Select Icon Theme...', commandId: 'iconThemeSelector.toggle' },
       separator,
-      { label: 'Extensions', actionId: 'extensions' },
+      { label: 'Extensions', commandId: 'zed.extensions' },
     ],
   },
   {
@@ -25,17 +26,17 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'New Window' },
       separator,
       { label: 'Open File...' },
-      { label: 'Open Folder...', actionId: 'openRemote' },
-      { label: 'Open Recent...', actionId: 'openRecent' },
-      { label: 'Open Remote...', actionId: 'openRemote' },
+      { label: 'Open Folder...', commandId: 'project.openRemote' },
+      { label: 'Open Recent...', commandId: 'project.openRecent' },
+      { label: 'Open Remote...', commandId: 'project.openRemote' },
       separator,
       { label: 'Add Folder to Project...' },
       separator,
-      { label: 'Save', actionId: 'save', disabledWhen: 'noActiveFile', shortcut: 'Ctrl+S' },
+      { label: 'Save', commandId: 'file.save', shortcut: 'Ctrl+S' },
       { label: 'Save As...' },
-      { label: 'Save All', actionId: 'save', disabledWhen: 'noActiveFile' },
+      { label: 'Save All', commandId: 'file.saveAll' },
       separator,
-      { label: 'Close Editor', actionId: 'closeEditor', disabledWhen: 'noActiveFile' },
+      { label: 'Close Editor', commandId: 'file.closeEditor' },
       { label: 'Close Project' },
       { label: 'Close Window' },
     ],
@@ -52,8 +53,8 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'Copy and Trim' },
       { label: 'Paste', shortcut: 'Ctrl+V' },
       separator,
-      { label: 'Find', actionId: 'find', shortcut: 'Ctrl+F' },
-      { label: 'Find in Project', actionId: 'findInProject', shortcut: 'Ctrl+Shift+F' },
+      { label: 'Find', commandId: 'editor.find', shortcut: 'Ctrl+F' },
+      { label: 'Find in Project', commandId: 'pane.deploySearch', shortcut: 'Ctrl+Shift+F' },
       separator,
       { label: 'Toggle Line Comment', shortcut: 'Ctrl+/' },
     ],
@@ -88,10 +89,10 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'Reset Zoom' },
       { label: 'Reset All Zoom' },
       separator,
-      { label: 'Toggle Left Dock', actionId: 'toggleLeftDock' },
-      { label: 'Toggle Right Dock', actionId: 'toggleRightDock' },
-      { label: 'Toggle Bottom Dock', actionId: 'toggleBottomDock' },
-      { label: 'Toggle All Docks', actionId: 'toggleAllDocks' },
+      { label: 'Toggle Left Dock', commandId: 'workspace.toggleLeftDock' },
+      { label: 'Toggle Right Dock', commandId: 'workspace.toggleRightDock' },
+      { label: 'Toggle Bottom Dock', commandId: 'workspace.toggleBottomDock' },
+      { label: 'Toggle All Docks', commandId: 'workspace.toggleAllDocks' },
       {
         label: 'Editor Layout',
         items: [
@@ -102,13 +103,13 @@ export const APP_MENU_DEFINITIONS = [
         ],
       },
       separator,
-      { label: 'Project Panel', actionId: 'projectPanel' },
-      { label: 'Outline Panel', actionId: 'outlinePanel' },
-      { label: 'Collab Panel', actionId: 'collabPanel' },
-      { label: 'Terminal Panel', actionId: 'terminalPanel' },
-      { label: 'Debugger Panel', actionId: 'debuggerPanel' },
+      { label: 'Project Panel', commandId: 'project.panel' },
+      { label: 'Outline Panel', commandId: 'outlinePanel.toggle' },
+      { label: 'Collab Panel', commandId: 'collabPanel.toggle' },
+      { label: 'Terminal Panel', commandId: 'terminalPanel.toggle' },
+      { label: 'Debugger Panel', commandId: 'debuggerPanel.toggle' },
       separator,
-      { label: 'Diagnostics', actionId: 'diagnostics' },
+      { label: 'Diagnostics', commandId: 'diagnostics.deploy' },
     ],
   },
   {
@@ -118,10 +119,10 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'Back' },
       { label: 'Forward' },
       separator,
-      { label: 'Command Palette...' },
+      { label: 'Command Palette...', commandId: 'commandPalette.toggle', shortcut: 'Ctrl+Shift+P' },
       separator,
-      { label: 'Go to File...', actionId: 'projectPanel' },
-      { label: 'Go to Symbol in Editor...', actionId: 'outlinePanel' },
+      { label: 'Go to File...', commandId: 'project.panel' },
+      { label: 'Go to Symbol in Editor...', commandId: 'outlinePanel.toggle' },
       { label: 'Go to Line/Column...' },
       separator,
       { label: 'Go to Definition' },
@@ -129,19 +130,19 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'Go to Type Definition' },
       { label: 'Find All References' },
       separator,
-      { label: 'Next Problem', actionId: 'diagnostics' },
-      { label: 'Previous Problem', actionId: 'diagnostics' },
+      { label: 'Next Problem', commandId: 'diagnostics.deploy' },
+      { label: 'Previous Problem', commandId: 'diagnostics.deploy' },
     ],
   },
   {
     id: 'run',
     label: 'Run',
     items: [
-      { label: 'Spawn Task', actionId: 'tasksPanel' },
-      { label: 'Start Debugger', actionId: 'debuggerPanel' },
+      { label: 'Spawn Task', commandId: 'tasks.spawn' },
+      { label: 'Start Debugger', commandId: 'debuggerPanel.toggle' },
       separator,
-      { label: 'Edit tasks.json...', actionId: 'tasksPanel' },
-      { label: 'Edit debug.json...', actionId: 'debuggerPanel' },
+      { label: 'Edit tasks.json...', commandId: 'tasks.spawn' },
+      { label: 'Edit debug.json...', commandId: 'debuggerPanel.toggle' },
       separator,
       { label: 'Continue' },
       { label: 'Step Over' },
@@ -165,35 +166,35 @@ export const APP_MENU_DEFINITIONS = [
       { label: 'View Release Notes Locally' },
       { label: 'View Telemetry' },
       { label: 'View Dependency Licenses' },
-      { label: 'Show Welcome', actionId: 'about' },
+      { label: 'Show Welcome', commandId: 'zed.about' },
       separator,
-      { label: 'File Bug Report...', actionId: 'fileBugReport' },
-      { label: 'Request Feature...', actionId: 'requestFeature' },
-      { label: 'Email Us...', actionId: 'emailZed' },
+      { label: 'File Bug Report...', commandId: 'help.fileBugReport' },
+      { label: 'Request Feature...', commandId: 'help.requestFeature' },
+      { label: 'Email Us...', commandId: 'help.emailZed' },
       separator,
-      { label: 'Documentation', actionId: 'documentation' },
-      { label: 'Zed Repository', actionId: 'zedRepository' },
-      { label: 'Zed Twitter', actionId: 'zedTwitter' },
-      { label: 'Join the Team', actionId: 'joinTheTeam' },
+      { label: 'Documentation', commandId: 'help.documentation' },
+      { label: 'Zed Repository', commandId: 'help.zedRepository' },
+      { label: 'Zed Twitter', commandId: 'help.zedTwitter' },
+      { label: 'Join the Team', commandId: 'help.joinTheTeam' },
     ],
   },
 ];
 
-export function resolveAppMenus(actions, state) {
+export function resolveAppMenus(commandRegistry, context) {
   return APP_MENU_DEFINITIONS.map((menu) => ({
     ...menu,
-    items: resolveMenuItems(menu.items, actions, state),
+    items: resolveMenuItems(menu.items, commandRegistry, context),
   }));
 }
 
-function resolveMenuItems(items, actions, state) {
+function resolveMenuItems(items, commandRegistry, context) {
   return items.map((item) => {
     if (item.type === 'separator') {
       return item;
     }
 
     if (item.items) {
-      const resolvedItems = resolveMenuItems(item.items, actions, state);
+      const resolvedItems = resolveMenuItems(item.items, commandRegistry, context);
       return {
         ...item,
         disabled: resolvedItems.every((child) => child.type === 'separator' || child.disabled),
@@ -201,23 +202,16 @@ function resolveMenuItems(items, actions, state) {
       };
     }
 
-    const action = actions[item.actionId];
+    const commandState = item.commandId
+      ? commandRegistry.getCommandState(item.commandId, context)
+      : { enabled: false };
+
     return {
       ...item,
-      disabled: Boolean(item.disabled) || !action || menuConditionMatches(item.disabledWhen, state),
-      onSelect: action,
+      disabled: Boolean(item.disabled) || !commandState.enabled,
+      onSelect: item.commandId
+        ? () => commandRegistry.executeCommand(item.commandId, context, { source: 'menu' })
+        : undefined,
     };
   });
-}
-
-function menuConditionMatches(condition, state) {
-  if (condition === 'noActiveFile') {
-    return !state.hasActiveFile;
-  }
-
-  if (condition === 'noSession') {
-    return !state.hasSession;
-  }
-
-  return false;
 }

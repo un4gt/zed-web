@@ -66,7 +66,7 @@ function RightDock({
       <section className="rail-section" aria-labelledby="buffer-heading">
         <div className="section-heading">
           <h2 id="buffer-heading">Buffer</h2>
-          <span>{activeMeta?.dirty ? 'dirty' : 'clean'}</span>
+          <span>{activeMeta?.conflict ? 'conflict' : activeMeta?.dirty ? 'dirty' : 'clean'}</span>
         </div>
 
         {activeMeta ? (
@@ -81,11 +81,15 @@ function RightDock({
             </div>
             <div>
               <dt>Mode</dt>
-              <dd>{activeMeta.language}</dd>
+              <dd>{activeMeta.languageName ?? activeMeta.language}</dd>
             </div>
             <div>
               <dt>Read</dt>
               <dd>{activeMeta.truncated ? 'truncated' : 'full file'}</dd>
+            </div>
+            <div>
+              <dt>Save</dt>
+              <dd>{activeMeta.conflict ? 'conflict' : activeMeta.dirty ? 'pending changes' : 'clean'}</dd>
             </div>
           </dl>
         ) : (

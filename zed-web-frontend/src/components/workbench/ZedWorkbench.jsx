@@ -1,7 +1,7 @@
-import { useMemo } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import CommandPalette from '../command/CommandPalette';
 import BottomPanel from '../panels/BottomPanel';
 import { ProjectDiagnosticsPanel, ProjectSearchPanel, TasksPanel, UtilityPanel } from '../panels/CenterPanels';
-import EditorPane from '../editor/EditorPane';
 import EditorPlaceholder from '../editor/EditorPlaceholder';
 import LeftDock from '../panels/LeftDock';
 import ResizeHandle from '../ui/ResizeHandle';
@@ -11,7 +11,13 @@ import IconThemeSelectorPanel from '../themes/IconThemeSelectorPanel';
 import ThemeSelectorPanel from '../themes/ThemeSelectorPanel';
 import TitleBar from '../shell/TitleBar';
 import ZedBottomBar from '../shell/ZedBottomBar';
+import { createWorkbenchCommandRegistry } from '../../commands/workbenchCommandRegistry';
 import { resolveAppMenus } from '../../constants/appMenus';
+import useWorkbenchKeybindings from '../../hooks/useWorkbenchKeybindings';
+import { loadMonaco } from '../../lib/monacoLoader';
+
+const loadEditorPane = () => import('../editor/EditorPane');
+const EditorPane = lazy(loadEditorPane);
 
 function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, workspace }) {
   const { form, updateFormField } = connectionForm;
@@ -47,6 +53,7 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
     openFile,
     openSession,
     reconnect,
+    revertActiveFile,
     saveActiveFile,
     session,
     setActivePath,
@@ -58,10 +65,77 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
     tabs,
     terminalStatus,
     tree,
+    treeLoadedPaths,
     appendStatus,
   } = workspace;
   const isSelectorPanelMode = centerPanelMode === 'theme' || centerPanelMode === 'icon-theme';
   const isCenterUtilityMode = Boolean(centerPanelMode && !isSelectorPanelMode);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const commandRegistry = useMemo(() => createWorkbenchCommandRegistry(), []);
+  const capabilities = useMemo(() => createCapabilitySet(session), [session]);
+  const commandContext = useMemo(
+    () => ({
+      activePath,
+      bottomPanelMode,
+      capabilities,
+      commandPaletteOpen,
+      hasActiveFile: Boolean(activeMeta),
+      hasSession: Boolean(session),
+      leftDockMode,
+      rightDockMode,
+      selectorOpen: isSelectorPanelMode,
+      suppressKeybindings: commandPaletteOpen || isSelectorPanelMode,
+      notify: appendStatus,
+      openExternalUrl,
+      panels: {
+        toggleBottomPanel,
+        toggleLeftDock,
+        toggleRightDock,
+      },
+      server: {
+        dispatch: (zedAction, command) => {
+          appendStatus(`${command.title} requires zed-server command dispatch (${zedAction}).`);
+        },
+      },
+      ui: {
+        setBottomPanelMode,
+        setCenterPanelMode,
+        setCommandPaletteOpen,
+        setLeftDockMode,
+        setRightDockMode,
+      },
+      workspace: {
+        activePath,
+        closeTab,
+        openRemotePanel,
+        revertActiveFile,
+        saveActiveFile,
+      },
+    }),
+    [
+      activeMeta,
+      activePath,
+      appendStatus,
+      bottomPanelMode,
+      capabilities,
+      closeTab,
+      commandPaletteOpen,
+      isSelectorPanelMode,
+      leftDockMode,
+      openRemotePanel,
+      rightDockMode,
+      revertActiveFile,
+      saveActiveFile,
+      session,
+      setBottomPanelMode,
+      setCenterPanelMode,
+      setLeftDockMode,
+      setRightDockMode,
+      toggleBottomPanel,
+      toggleLeftDock,
+      toggleRightDock,
+    ],
+  );
   const closeSelectorPanel = () => {
     if (centerPanelMode === 'theme') {
       themeManager.cancelPreview();
@@ -74,81 +148,43 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
     setCenterPanelMode(null);
   };
   const appMenus = useMemo(
-    () =>
-      resolveAppMenus(
-        {
-          about: () => setCenterPanelMode('about'),
-          checkRemoteServerUpdates: () => appendStatus('remote-zed-server update check is not connected yet.'),
-          checkUiUpdates: () => appendStatus('UI update check is not connected yet. Rebuild the Docker image to deploy the latest UI.'),
-          closeEditor: () => {
-            if (activePath) {
-              closeTab(activePath);
-            }
-          },
-          collabPanel: () => setLeftDockMode('threads'),
-          debuggerPanel: () => toggleBottomPanel('debug'),
-          diagnostics: () => setCenterPanelMode('diagnostics'),
-          documentation: () => openExternalUrl('https://zed.dev/docs'),
-          emailZed: () => openExternalUrl('mailto:hello@zed.dev'),
-          extensions: () => setCenterPanelMode('extensions'),
-          fileBugReport: () => openExternalUrl('https://github.com/zed-industries/zed/issues/new/choose'),
-          find: () => setCenterPanelMode('search'),
-          findInProject: () => setCenterPanelMode('search'),
-          joinTheTeam: () => openExternalUrl('https://zed.dev/jobs'),
-          openRecent: () => setLeftDockMode('recent'),
-          openRemote: openRemotePanel,
-          openSettings: () => setCenterPanelMode('settings'),
-          openSettingsFile: () => setCenterPanelMode('settings-file'),
-          outlinePanel: () => setLeftDockMode('outline'),
-          projectPanel: () => setLeftDockMode('project'),
-          requestFeature: () => openExternalUrl('https://github.com/zed-industries/zed/discussions/categories/feature-requests'),
-          save: saveActiveFile,
-          selectIconTheme: () => setCenterPanelMode('icon-theme'),
-          selectTheme: () => setCenterPanelMode('theme'),
-          tasksPanel: () => setCenterPanelMode('tasks'),
-          terminalPanel: () => toggleBottomPanel('terminal'),
-          toggleAllDocks: () => {
-            if (leftDockMode || rightDockMode || bottomPanelMode) {
-              setLeftDockMode(null);
-              setRightDockMode(null);
-              setBottomPanelMode(null);
-            } else {
-              setLeftDockMode('project');
-              setRightDockMode('inspector');
-              toggleBottomPanel('terminal');
-            }
-          },
-          toggleBottomDock: () => toggleBottomPanel('terminal'),
-          toggleLeftDock: () => toggleLeftDock(leftDockMode ?? 'project'),
-          toggleRightDock: () => toggleRightDock(rightDockMode ?? 'inspector'),
-          zedRepository: () => openExternalUrl('https://github.com/zed-industries/zed'),
-          zedTwitter: () => openExternalUrl('https://twitter.com/zeddotdev'),
-        },
-        {
-          hasActiveFile: Boolean(activeMeta),
-          hasSession: Boolean(session),
-        },
-      ),
-    [
-      activeMeta,
-      activePath,
-      appendStatus,
-      bottomPanelMode,
-      closeTab,
-      leftDockMode,
-      openRemotePanel,
-      rightDockMode,
-      saveActiveFile,
-      session,
-      setBottomPanelMode,
-      setCenterPanelMode,
-      setLeftDockMode,
-      setRightDockMode,
-      toggleBottomPanel,
-      toggleLeftDock,
-      toggleRightDock,
-    ],
+    () => resolveAppMenus(commandRegistry, commandContext),
+    [commandContext, commandRegistry],
   );
+  const commands = useMemo(
+    () => commandRegistry.getVisibleCommands(commandContext),
+    [commandContext, commandRegistry],
+  );
+  const keybindings = useMemo(
+    () => commandRegistry.getKeybindings(),
+    [commandRegistry],
+  );
+  const executeCommandById = useCallback(
+    (commandId, options = {}) => {
+      const executed = commandRegistry.executeCommand(commandId, commandContext, options);
+
+      if (!executed) {
+        return false;
+      }
+
+      if (options.source === 'palette') {
+        setCommandPaletteOpen(false);
+      }
+
+      return true;
+    },
+    [commandContext, commandRegistry],
+  );
+  const openKeybindingChange = useCallback(() => {
+    executeCommandById('zed.openKeymap', { source: 'palette' });
+  }, [executeCommandById]);
+
+  useWorkbenchKeybindings({
+    bindings: keybindings,
+    context: commandContext,
+    onCommand: executeCommandById,
+  });
+  useEffect(scheduleEditorRuntimePreload, []);
 
   return (
     <div className="zed-shell">
@@ -163,6 +199,7 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
           iconTheme={iconThemeManager.displayedIconTheme}
           menus={appMenus}
           onRefreshTree={() => loadTree()}
+          onRevertActiveFile={revertActiveFile}
           onSaveActiveFile={saveActiveFile}
           session={session}
         />
@@ -194,6 +231,7 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
                 onOpenSession={openSession}
                 onReconnect={reconnect}
                 session={session}
+                treeLoadedPaths={treeLoadedPaths}
               />
               <ResizeHandle
                 direction="vertical"
@@ -231,13 +269,21 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
               ) : isCenterUtilityMode ? (
                 <UtilityPanel mode={centerPanelMode} onClose={() => setCenterPanelMode(null)} />
               ) : activeMeta ? (
-                <EditorPane
-                  activeTheme={themeManager.displayedTheme}
-                  key={activeMeta.path}
-                  language={activeMeta.language}
-                  onDirtyChange={setBufferDirty}
-                  path={activeMeta.path}
-                />
+                <Suspense fallback={<div className="editor-loading">Loading editor</div>}>
+                  <EditorPane
+                    activeTheme={themeManager.displayedTheme}
+                    capabilities={capabilities}
+                    gatewayUrl={gatewayUrl}
+                    key={activeMeta.path}
+                    language={activeMeta.language}
+                    loading={activeMeta.loading}
+                    onDirtyChange={setBufferDirty}
+                    partial={activeMeta.partial}
+                    path={activeMeta.path}
+                    readOnly={activeMeta.readOnly || activeMeta.truncated}
+                    session={session}
+                  />
+                </Suspense>
               ) : (
                 <EditorPlaceholder
                   form={form}
@@ -326,6 +372,7 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
           leftDockMode={leftDockMode}
           onOpenRemote={openRemotePanel}
           onRefreshTree={() => loadTree()}
+          onRevertActiveFile={revertActiveFile}
           onSaveActiveFile={saveActiveFile}
           onToggleBottomPanel={toggleBottomPanel}
           onToggleCenterPanel={toggleCenterPanel}
@@ -355,6 +402,15 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
             )}
           </div>
         ) : null}
+
+        {commandPaletteOpen ? (
+          <CommandPalette
+            commands={commands}
+            onClose={() => setCommandPaletteOpen(false)}
+            onRequestKeybindingChange={openKeybindingChange}
+            onRunCommand={(commandId) => executeCommandById(commandId, { source: 'palette' })}
+          />
+        ) : null}
       </main>
     </div>
   );
@@ -362,6 +418,66 @@ function ZedWorkbench({ connectionForm, iconThemeManager, panels, themeManager, 
 
 function openExternalUrl(url) {
   window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function createCapabilitySet(session) {
+  const capabilities = session?.capabilities;
+
+  if (Array.isArray(capabilities)) {
+    return new Set(capabilities);
+  }
+
+  if (capabilities && typeof capabilities === 'object') {
+    return new Set(
+      Object.entries(capabilities)
+        .filter(([, enabled]) => Boolean(enabled))
+        .map(([capability]) => capability),
+    );
+  }
+
+  return new Set();
+}
+
+function scheduleEditorRuntimePreload() {
+  let idleHandle = null;
+  let timeoutHandle = null;
+  let disposed = false;
+
+  function preloadWhenIdle() {
+    if (disposed) {
+      return;
+    }
+
+    if ('requestIdleCallback' in window) {
+      idleHandle = window.requestIdleCallback(preloadEditorRuntime, { timeout: 2500 });
+      return;
+    }
+
+    timeoutHandle = window.setTimeout(preloadEditorRuntime, 600);
+  }
+
+  if (document.readyState === 'complete') {
+    preloadWhenIdle();
+  } else {
+    window.addEventListener('load', preloadWhenIdle, { once: true });
+  }
+
+  return () => {
+    disposed = true;
+    window.removeEventListener('load', preloadWhenIdle);
+
+    if (idleHandle !== null && 'cancelIdleCallback' in window) {
+      window.cancelIdleCallback(idleHandle);
+    }
+
+    if (timeoutHandle !== null) {
+      window.clearTimeout(timeoutHandle);
+    }
+  };
+}
+
+function preloadEditorRuntime() {
+  void Promise.allSettled([loadEditorPane(), loadMonaco()]);
 }
 
 export default ZedWorkbench;

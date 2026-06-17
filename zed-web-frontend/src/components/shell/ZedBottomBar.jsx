@@ -19,6 +19,8 @@ function ZedBottomBar({
   terminalStatus,
 }) {
   const dirty = Boolean(activeMeta?.dirty);
+  const conflict = Boolean(activeMeta?.conflict);
+  const languageName = activeMeta?.languageName ?? activeMeta?.language;
 
   return (
     <footer className="zed-bottombar" aria-label="zew workbench controls">
@@ -80,13 +82,13 @@ function ZedBottomBar({
           {session ? `Gateway ${connectionState}` : 'Open Remote'}
         </button>
         {activeMeta ? (
-          <button className="zed-status-pill" disabled={!dirty} onClick={onSaveActiveFile} type="button">
-            {dirty ? 'Save changes' : activeMeta.language}
+          <button className="zed-status-pill" disabled={!dirty && !conflict} onClick={onSaveActiveFile} type="button">
+            {conflict ? 'Save conflict' : dirty ? 'Save changes' : languageName}
           </button>
         ) : null}
       </div>
       <div className="zed-bottombar-right">
-        <span className="zed-status-text">{activeMeta ? `${activeMeta.language} | UTF-8` : session?.target ?? 'not connected'}</span>
+        <span className="zed-status-text">{activeMeta ? `${languageName} | UTF-8` : session?.target ?? 'not connected'}</span>
         <ZedBarButton
           active={rightDockMode === 'remote'}
           icon="zed"
