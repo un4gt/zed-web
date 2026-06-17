@@ -6,7 +6,10 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use actix_web::HttpServer;
 use actix_web::{App, test};
+use awc::ws;
+use futures_util::{SinkExt, StreamExt};
 use gateway_core::api::{
     CreateSessionRequest, RemoteServerPolicy, RemoteServerUpdateMode, SaveFileRequest,
 };
@@ -207,6 +210,462 @@ async fn open_file_save_should_work_over_http() {
 }
 
 #[actix_web::test]
+async fn tree_should_prefetch_nested_entries_when_depth_is_requested() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    fs::create_dir_all(harness.project_dir.join("src/nested")).expect("create nested project dirs");
+    fs::write(harness.project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main file");
+    fs::write(
+        harness.project_dir.join("src/nested/lib.rs"),
+        "pub fn lib() {}\n",
+    )
+    .expect("write nested file");
+
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let app = test::init_service(App::new().app_data(state).service(api_scope())).await;
+
+    let create_request = test::TestRequest::post()
+        .uri("/api/sessions")
+        .set_json(serde_json::json!({
+            "host": "127.0.0.1",
+            "user": harness.username,
+            "port": harness.port,
+            "ssh_args": harness.ssh_args(),
+            "project_path": harness.project_dir,
+            "zed_remote_binary": harness.remote_binary_path,
+            "managed_data_dir": harness.root_dir.join("managed-data"),
+            "remote_server": {
+                "mode": "disabled"
+            }
+        }))
+        .to_request();
+    let create_response = await_with_timeout(
+        test::call_service(&app, create_request),
+        "create session request",
+    )
+    .await;
+    assert!(create_response.status().is_success());
+    let create_body: Value = test::read_body_json(create_response).await;
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let tree_request = test::TestRequest::get()
+        .uri(&format!("/api/sessions/{session_id}/tree?depth=2"))
+        .to_request();
+    let tree_response =
+        await_with_timeout(test::call_service(&app, tree_request), "tree request").await;
+    assert!(tree_response.status().is_success());
+    let tree_body: Value = test::read_body_json(tree_response).await;
+
+    let paths = json_array_strings(&tree_body["entries"], "path");
+    assert!(paths.contains(&"src".to_string()));
+    assert!(paths.contains(&"src/main.rs".to_string()));
+    assert!(paths.contains(&"src/nested".to_string()));
+    assert!(!paths.contains(&"src/nested/lib.rs".to_string()));
+
+    let loaded_paths = tree_body["loaded_paths"]
+        .as_array()
+        .expect("loaded paths array")
+        .iter()
+        .map(|value| value.as_str().expect("loaded path string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(loaded_paths, vec!["".to_string(), "src".to_string()]);
+}
+
+#[actix_web::test]
+async fn command_websocket_should_stream_file_chunks() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    fs::write(
+        harness.project_dir.join("large.md"),
+        format!("# Title\n\n{}", "body line\n".repeat(2000)),
+    )
+    .expect("write large markdown file");
+
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let server = HttpServer::new(move || App::new().app_data(state.clone()).service(api_scope()))
+        .listen(listener)
+        .expect("listen test server")
+        .run();
+    let server_handle = server.handle();
+    actix_web::rt::spawn(server);
+
+    let client = awc::Client::default();
+    let mut create_response = await_with_timeout(
+        client
+            .post(format!("http://{address}/api/sessions"))
+            .send_json(&serde_json::json!({
+                "host": "127.0.0.1",
+                "user": harness.username,
+                "port": harness.port,
+                "ssh_args": harness.ssh_args(),
+                "project_path": harness.project_dir,
+                "zed_remote_binary": harness.remote_binary_path,
+                "managed_data_dir": harness.root_dir.join("managed-data"),
+                "remote_server": {
+                    "mode": "disabled"
+                }
+            })),
+        "create session request",
+    )
+    .await
+    .expect("create session response");
+    assert!(create_response.status().is_success());
+    let create_body: Value = create_response.json().await.expect("create session json");
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let (_response, mut framed) = await_with_timeout(
+        client
+            .ws(format!("ws://{address}/api/sessions/{session_id}/commands"))
+            .connect(),
+        "command websocket connect",
+    )
+    .await
+    .expect("connect websocket");
+    framed
+        .send(ws::Message::Text(
+            serde_json::json!({
+                "id": "open-1",
+                "type": "file.open",
+                "payload": {
+                    "path": "large.md",
+                    "initial_bytes": 64,
+                    "chunk_bytes": 512
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send file.open");
+
+    let mut saw_started = false;
+    let mut saw_chunk = false;
+    let mut complete = None;
+
+    while let Some(frame) = await_with_timeout(framed.next(), "command websocket frame").await {
+        let frame = frame.expect("websocket frame");
+        let ws::Frame::Text(bytes) = frame else {
+            continue;
+        };
+        let message: Value = serde_json::from_slice(&bytes).expect("command json");
+        match message["type"].as_str().expect("message type") {
+            "file.open.started" => saw_started = true,
+            "file.chunk" => {
+                saw_chunk = true;
+                assert_eq!(message["payload"]["path"], "large.md");
+            }
+            "file.complete" => {
+                complete = Some(message);
+                break;
+            }
+            other => panic!("unexpected command response: {other}"),
+        }
+    }
+
+    assert!(saw_started);
+    assert!(saw_chunk);
+    assert_eq!(
+        complete.expect("complete message")["payload"]["path"],
+        "large.md"
+    );
+    server_handle.stop(true).await;
+}
+
+#[actix_web::test]
+async fn command_websocket_should_open_save_and_sync_buffer() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let server = HttpServer::new(move || App::new().app_data(state.clone()).service(api_scope()))
+        .listen(listener)
+        .expect("listen test server")
+        .run();
+    let server_handle = server.handle();
+    actix_web::rt::spawn(server);
+
+    let client = awc::Client::default();
+    let mut create_response = await_with_timeout(
+        client
+            .post(format!("http://{address}/api/sessions"))
+            .send_json(&serde_json::json!({
+                "host": "127.0.0.1",
+                "user": harness.username,
+                "port": harness.port,
+                "ssh_args": harness.ssh_args(),
+                "project_path": harness.project_dir,
+                "zed_remote_binary": harness.remote_binary_path,
+                "managed_data_dir": harness.root_dir.join("managed-data"),
+                "remote_server": {
+                    "mode": "disabled"
+                }
+            })),
+        "create session request",
+    )
+    .await
+    .expect("create session response");
+    assert!(create_response.status().is_success());
+    let create_body: Value = create_response.json().await.expect("create session json");
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let (_response, mut framed) = await_with_timeout(
+        client
+            .ws(format!("ws://{address}/api/sessions/{session_id}/commands"))
+            .connect(),
+        "command websocket connect",
+    )
+    .await
+    .expect("connect websocket");
+
+    framed
+        .send(ws::Message::Text(
+            serde_json::json!({
+                "id": "buffer-open-1",
+                "type": "buffer.open",
+                "payload": {
+                    "path": "hello.txt",
+                    "initial_bytes": 8,
+                    "chunk_bytes": 8
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send buffer.open");
+
+    let mut open_complete = None;
+    while let Some(frame) = await_with_timeout(framed.next(), "buffer open frame").await {
+        let frame = frame.expect("websocket frame");
+        let ws::Frame::Text(bytes) = frame else {
+            continue;
+        };
+        let message: Value = serde_json::from_slice(&bytes).expect("command json");
+        match message["type"].as_str().expect("message type") {
+            "buffer.open.started" | "buffer.chunk" => {}
+            "buffer.open.complete" => {
+                open_complete = Some(message);
+                break;
+            }
+            other => panic!("unexpected buffer open response: {other}"),
+        }
+    }
+    let open_complete = open_complete.expect("buffer open complete");
+    let base_resource_version = open_complete["payload"]["resource_version"].clone();
+
+    framed
+        .send(ws::Message::Text(
+            serde_json::json!({
+                "id": "buffer-save-1",
+                "type": "buffer.save",
+                "payload": {
+                    "path": "hello.txt",
+                    "base_resource_version": base_resource_version,
+                    "batches": [{
+                        "seq": 1,
+                        "source": "user",
+                        "modelVersionId": 2,
+                        "alternativeVersionId": 2,
+                        "changes": [{
+                            "range": {
+                                "start": { "line": 0, "character": 11 },
+                                "end": { "line": 0, "character": 14 }
+                            },
+                            "rangeOffsetUtf16": 11,
+                            "rangeLengthUtf16": 3,
+                            "text": "buffer"
+                        }]
+                    }],
+                    "expected_content_length": "hello from buffer test\n".len()
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send buffer.save");
+
+    let mut save_complete = None;
+    while let Some(frame) = await_with_timeout(framed.next(), "buffer save frame").await {
+        let frame = frame.expect("websocket frame");
+        let ws::Frame::Text(bytes) = frame else {
+            continue;
+        };
+        let message: Value = serde_json::from_slice(&bytes).expect("command json");
+        match message["type"].as_str().expect("message type") {
+            "buffer.save.complete" => {
+                save_complete = Some(message);
+                break;
+            }
+            other => panic!("unexpected buffer save response: {other}"),
+        }
+    }
+    let save_payload = save_complete.expect("buffer save complete")["payload"].clone();
+    assert_eq!(save_payload["status"], "saved");
+    assert_eq!(save_payload["applied_seq"], 1);
+    assert_eq!(
+        fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read saved file"),
+        "hello from buffer test\n"
+    );
+
+    framed
+        .send(ws::Message::Text(
+            serde_json::json!({
+                "id": "buffer-sync-1",
+                "type": "buffer.sync",
+                "payload": {
+                    "buffers": [{
+                        "path": "hello.txt",
+                        "base_resource_version": save_payload["resource_version"].clone(),
+                        "dirty": false,
+                        "last_seq": 1
+                    }]
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send buffer.sync");
+
+    while let Some(frame) = await_with_timeout(framed.next(), "buffer sync frame").await {
+        let frame = frame.expect("websocket frame");
+        let ws::Frame::Text(bytes) = frame else {
+            continue;
+        };
+        let message: Value = serde_json::from_slice(&bytes).expect("command json");
+        if message["type"] == "buffer.sync.complete" {
+            assert_eq!(message["payload"]["buffers"][0]["status"], "unchanged");
+            break;
+        }
+        panic!("unexpected buffer sync response: {}", message["type"]);
+    }
+
+    server_handle.stop(true).await;
+}
+
+#[actix_web::test]
+async fn command_websocket_should_report_buffer_save_conflict_without_writing() {
+    let harness = TestHarness::start().expect("start test ssh harness");
+    let state = AppState {
+        registry: SessionRegistry::new(),
+    }
+    .data();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let server = HttpServer::new(move || App::new().app_data(state.clone()).service(api_scope()))
+        .listen(listener)
+        .expect("listen test server")
+        .run();
+    let server_handle = server.handle();
+    actix_web::rt::spawn(server);
+
+    let client = awc::Client::default();
+    let mut create_response = await_with_timeout(
+        client
+            .post(format!("http://{address}/api/sessions"))
+            .send_json(&serde_json::json!({
+                "host": "127.0.0.1",
+                "user": harness.username,
+                "port": harness.port,
+                "ssh_args": harness.ssh_args(),
+                "project_path": harness.project_dir,
+                "zed_remote_binary": harness.remote_binary_path,
+                "managed_data_dir": harness.root_dir.join("managed-data"),
+                "remote_server": {
+                    "mode": "disabled"
+                }
+            })),
+        "create session request",
+    )
+    .await
+    .expect("create session response");
+    assert!(create_response.status().is_success());
+    let create_body: Value = create_response.json().await.expect("create session json");
+    let session_id = create_body["session"]["id"]
+        .as_str()
+        .expect("session id in response");
+
+    let (_response, mut framed) = await_with_timeout(
+        client
+            .ws(format!("ws://{address}/api/sessions/{session_id}/commands"))
+            .connect(),
+        "command websocket connect",
+    )
+    .await
+    .expect("connect websocket");
+
+    framed
+        .send(ws::Message::Text(
+            serde_json::json!({
+                "id": "buffer-save-conflict-1",
+                "type": "buffer.save",
+                "payload": {
+                    "path": "hello.txt",
+                    "base_resource_version": {
+                        "scheme": "ssh-stat",
+                        "value": "stale"
+                    },
+                    "batches": [{
+                        "seq": 1,
+                        "source": "user",
+                        "modelVersionId": 2,
+                        "alternativeVersionId": 2,
+                        "changes": [{
+                            "range": {
+                                "start": { "line": 0, "character": 0 },
+                                "end": { "line": 0, "character": 5 }
+                            },
+                            "rangeOffsetUtf16": 0,
+                            "rangeLengthUtf16": 5,
+                            "text": "CHANGED"
+                        }]
+                    }],
+                    "expected_content_length": "CHANGED from ssh test\n".len()
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send buffer.save conflict");
+
+    while let Some(frame) = await_with_timeout(framed.next(), "buffer conflict frame").await {
+        let frame = frame.expect("websocket frame");
+        let ws::Frame::Text(bytes) = frame else {
+            continue;
+        };
+        let message: Value = serde_json::from_slice(&bytes).expect("command json");
+        if message["type"] == "buffer.save.complete" {
+            assert_eq!(message["payload"]["status"], "conflict");
+            break;
+        }
+        panic!("unexpected buffer conflict response: {}", message["type"]);
+    }
+
+    assert_eq!(
+        fs::read_to_string(harness.project_dir.join("hello.txt")).expect("read unchanged file"),
+        "hello from ssh test\n"
+    );
+    server_handle.stop(true).await;
+}
+
+#[actix_web::test]
 async fn open_file_should_reject_absolute_path_outside_project() {
     let harness = TestHarness::start().expect("start test ssh harness");
     let state = AppState {
@@ -256,6 +715,19 @@ async fn open_file_should_reject_absolute_path_outside_project() {
         read_body["error"],
         "absolute path is outside project root: /etc/passwd"
     );
+}
+
+fn json_array_strings(body: &Value, field_name: &str) -> Vec<String> {
+    body.as_array()
+        .expect("array body")
+        .iter()
+        .map(|entry| {
+            entry[field_name]
+                .as_str()
+                .expect("field should be a string")
+                .to_string()
+        })
+        .collect()
 }
 
 async fn await_with_timeout<T>(future: impl Future<Output = T>, label: &'static str) -> T {
