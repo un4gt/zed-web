@@ -8,6 +8,7 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::commands;
 use crate::handlers;
 use crate::terminal::{TerminalSocketCommand, terminal_socket_channel};
 
@@ -39,6 +40,7 @@ pub fn api_scope() -> Scope {
             "/sessions/{session_id}/events",
             web::get().to(session_events),
         )
+        .route("/sessions/{session_id}/commands", web::get().to(command_ws))
         .route(
             "/sessions/{session_id}/terminal",
             web::get().to(terminal_ws),
@@ -91,6 +93,20 @@ async fn session_events(
             }))
             .await;
     });
+
+    Ok(response)
+}
+
+async fn command_ws(
+    req: HttpRequest,
+    stream: web::Payload,
+    state: web::Data<AppState>,
+    session_id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let session = handlers::require_session(state, session_id.into_inner()).await?;
+    let (response, socket, messages) = actix_ws::handle(&req, stream)?;
+
+    actix_web::rt::spawn(commands::command_socket(session, socket, messages));
 
     Ok(response)
 }

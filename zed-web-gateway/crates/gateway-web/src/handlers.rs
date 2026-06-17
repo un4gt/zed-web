@@ -53,7 +53,7 @@ pub async fn get_tree(
 ) -> Result<impl Responder, ApiError> {
     let session = require_session(state, session_id.into_inner()).await?;
     let tree = session
-        .list_directory(query.path.clone())
+        .list_directory(query.path.clone(), query.depth)
         .await
         .map_err(ApiError::from_session_error)?;
     Ok(Json(tree))

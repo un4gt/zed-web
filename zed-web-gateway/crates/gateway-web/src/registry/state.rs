@@ -34,3 +34,9 @@ impl SessionRegistry {
         self.sessions.read().await.get(&id).cloned()
     }
 }
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
