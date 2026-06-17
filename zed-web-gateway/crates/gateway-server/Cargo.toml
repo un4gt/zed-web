@@ -5,7 +5,10 @@ version.workspace = true
 
 [dependencies]
 actix-cors.workspace = true
+actix-files.workspace = true
 actix-web.workspace = true
+base64.workspace = true
+futures-util.workspace = true
 gateway-web = { path = "../gateway-web" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
