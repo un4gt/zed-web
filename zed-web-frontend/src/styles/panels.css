@@ -246,87 +246,17 @@
   color: var(--danger);
 }
 
-.tree-list,
 .event-log {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.tree-list {
-  min-height: 0;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.tree-children {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.tree-list li + li,
-.tree-children li + li {
-  margin-top: 2px;
-}
-
-.tree-entry {
-  display: grid;
-  grid-template-columns: 14px 18px minmax(0, 1fr);
-  align-items: center;
-  gap: 5px;
+.project-file-tree {
+  flex: 1;
   width: 100%;
-  min-height: 28px;
-  border: 1px solid transparent;
-  border-radius: 5px;
+  min-height: 0;
   background: transparent;
-  color: var(--text-muted);
-  padding: 0 7px 0 calc(7px + var(--tree-depth, 0) * 14px);
-  text-align: left;
-  transition:
-    background 150ms ease-out,
-    color 150ms ease-out;
-}
-
-.tree-entry:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.tree-entry .file-icon {
-  width: 15px;
-  height: 15px;
-}
-
-.tree-entry-chevron {
-  display: grid;
-  width: 14px;
-  height: 14px;
-  place-items: center;
-  color: var(--text-subtle);
-}
-
-.tree-entry-chevron .file-icon {
-  width: 12px;
-  height: 12px;
-  opacity: 0.72;
-}
-
-.tree-entry span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tree-message {
-  min-height: 24px;
-  color: var(--text-subtle);
-  font-size: 11px;
-  padding: 5px 7px 5px calc(44px + var(--tree-depth, 0) * 14px);
-}
-
-.tree-message-danger {
-  color: var(--danger);
 }
 
 .tree-empty {

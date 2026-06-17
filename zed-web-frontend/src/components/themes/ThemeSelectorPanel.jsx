@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 function ThemeSelectorPanel({ onClose, themeManager }) {
   const [query, setQuery] = useState('');
@@ -6,6 +6,8 @@ function ThemeSelectorPanel({ onClose, themeManager }) {
   const [installError, setInstallError] = useState('');
   const [isInstalling, setIsInstalling] = useState(false);
   const extensionInputRef = useRef(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
   const deferredQuery = useDeferredValue(query);
   const selectedTheme = themeManager.previewTheme ?? themeManager.activeTheme;
   const orderedThemes = useMemo(() => orderThemesForPicker(themeManager.themes), [themeManager.themes]);
@@ -16,6 +18,15 @@ function ThemeSelectorPanel({ onClose, themeManager }) {
   const selectedThemeIndex = filteredThemes.findIndex((theme) => theme.id === selectedTheme?.id);
   const statusMessage = installState || installError || themeManager.error;
   const hasStatusError = Boolean(installError || themeManager.error);
+
+  useEffect(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    const selectedNode = listRef.current?.querySelector('[data-selected="true"]');
+    selectedNode?.scrollIntoView({ block: 'nearest' });
+  }, [filteredThemes, selectedThemeIndex]);
 
   const handleClose = () => {
     themeManager.cancelPreview();
@@ -68,26 +79,32 @@ function ThemeSelectorPanel({ onClose, themeManager }) {
     >
       <input
         aria-label="Select Theme"
+        aria-activedescendant={selectedThemeIndex >= 0 ? `theme-picker-row-${selectedThemeIndex}` : undefined}
+        aria-controls="theme-picker-list"
         autoComplete="off"
         autoFocus
         className="zed-picker-input"
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Select Theme..."
+        ref={inputRef}
+        role="combobox"
+        spellCheck="false"
         type="search"
         value={query}
       />
 
-      <div className="zed-picker-list" role="listbox" aria-label="Themes">
+      <div className="zed-picker-list" id="theme-picker-list" ref={listRef} role="listbox" aria-label="Themes">
         {themeManager.loadState === 'loading' ? <div className="zed-picker-message">Loading themes...</div> : null}
         {filteredThemes.length === 0 && themeManager.loadState !== 'loading' ? (
           <div className="zed-picker-message">No themes found</div>
         ) : null}
-        {filteredThemes.map((theme) => (
+        {filteredThemes.map((theme, index) => (
           <PickerRow
             active={theme.id === themeManager.activeTheme?.id}
             key={theme.id}
             onApply={themeManager.applyThemeById}
             onPreview={themeManager.previewThemeById}
+            rowId={`theme-picker-row-${index}`}
             selected={theme.id === selectedTheme?.id}
             theme={theme}
           />
@@ -125,11 +142,13 @@ function ThemeSelectorPanel({ onClose, themeManager }) {
   );
 }
 
-function PickerRow({ active, onApply, onPreview, selected, theme }) {
+function PickerRow({ active, onApply, onPreview, rowId, selected, theme }) {
   return (
     <button
       aria-selected={selected}
       className={`zed-picker-row ${selected ? 'is-selected' : ''} ${active ? 'is-active-theme' : ''}`}
+      data-selected={selected ? 'true' : undefined}
+      id={rowId}
       onClick={() => onPreview(theme.id)}
       onDoubleClick={() => onApply(theme.id)}
       onFocus={() => onPreview(theme.id)}
@@ -191,6 +210,8 @@ function getAppearanceRank(appearance) {
 }
 
 function handlePanelKeyDown(event, { filteredThemes, onApply, onClose, onPreview, selectedThemeIndex }) {
+  event.stopPropagation();
+
   if (event.key === 'Escape') {
     event.preventDefault();
     onClose();

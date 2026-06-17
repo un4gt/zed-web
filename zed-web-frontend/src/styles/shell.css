@@ -184,52 +184,80 @@
 .window-controls {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding-inline: 8px;
+  align-self: stretch;
+  padding-inline: 4px 0;
 }
 
 .window-control {
   position: relative;
-  width: 12px;
-  height: 12px;
+  display: inline-flex;
+  width: 36px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
   color: var(--text);
+  padding: 0;
 }
 
 .window-control::before,
 .window-control::after {
   content: "";
   position: absolute;
+  top: 50%;
+  left: 50%;
   background: currentColor;
   opacity: 0.8;
 }
 
-.window-control-minimize::before {
-  right: 0;
-  bottom: 4px;
-  left: 0;
-  height: 1px;
+.window-control-fullscreen {
+  cursor: pointer;
 }
 
-.window-control-restore::before {
-  inset: 1px 2px 2px 1px;
+.window-control-fullscreen:hover,
+.window-control-fullscreen:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.window-control-fullscreen:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.window-control-minimize::before {
+  width: 12px;
+  height: 1px;
+  transform: translate(-50%, 3px);
+}
+
+.window-control-fullscreen::before {
+  width: 10px;
+  height: 8px;
   border: 1px solid currentColor;
   background: transparent;
+  transform: translate(-50%, -50%);
+}
+
+.window-control-fullscreen.is-fullscreen::before {
+  width: 12px;
+  height: 1px;
+  border: 0;
+  background: currentColor;
+  transform: translate(-50%, -50%);
 }
 
 .window-control-close::before {
-  top: 5px;
-  right: 0;
-  left: 0;
+  width: 13px;
   height: 1px;
-  transform: rotate(45deg);
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .window-control-close::after {
-  top: 5px;
-  right: 0;
-  left: 0;
+  width: 13px;
   height: 1px;
-  transform: rotate(-45deg);
+  transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 .section-heading h2 {

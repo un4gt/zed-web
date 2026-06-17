@@ -48,6 +48,13 @@
   padding: 7px 9px;
 }
 
+.terminal-loading {
+  display: grid;
+  place-items: center;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+}
+
 .terminal-surface .xterm {
   height: 100%;
 }

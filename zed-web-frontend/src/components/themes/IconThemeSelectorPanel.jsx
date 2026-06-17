@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 function IconThemeSelectorPanel({ iconThemeManager, onClose }) {
   const [query, setQuery] = useState('');
@@ -6,6 +6,8 @@ function IconThemeSelectorPanel({ iconThemeManager, onClose }) {
   const [installError, setInstallError] = useState('');
   const [isInstalling, setIsInstalling] = useState(false);
   const extensionInputRef = useRef(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
   const deferredQuery = useDeferredValue(query);
   const selectedIconTheme = iconThemeManager.previewIconTheme ?? iconThemeManager.activeIconTheme;
   const orderedIconThemes = useMemo(
@@ -19,6 +21,15 @@ function IconThemeSelectorPanel({ iconThemeManager, onClose }) {
   const selectedIconThemeIndex = filteredIconThemes.findIndex((iconTheme) => iconTheme.id === selectedIconTheme?.id);
   const statusMessage = installState || installError || iconThemeManager.error;
   const hasStatusError = Boolean(installError || iconThemeManager.error);
+
+  useEffect(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    const selectedNode = listRef.current?.querySelector('[data-selected="true"]');
+    selectedNode?.scrollIntoView({ block: 'nearest' });
+  }, [filteredIconThemes, selectedIconThemeIndex]);
 
   const handleClose = () => {
     iconThemeManager.cancelPreview();
@@ -71,27 +82,39 @@ function IconThemeSelectorPanel({ iconThemeManager, onClose }) {
     >
       <input
         aria-label="Select Icon Theme"
+        aria-activedescendant={selectedIconThemeIndex >= 0 ? `icon-theme-picker-row-${selectedIconThemeIndex}` : undefined}
+        aria-controls="icon-theme-picker-list"
         autoComplete="off"
         autoFocus
         className="zed-picker-input"
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Select Icon Theme..."
+        ref={inputRef}
+        role="combobox"
+        spellCheck="false"
         type="search"
         value={query}
       />
 
-      <div className="zed-picker-list" role="listbox" aria-label="Icon themes">
+      <div
+        className="zed-picker-list"
+        id="icon-theme-picker-list"
+        ref={listRef}
+        role="listbox"
+        aria-label="Icon themes"
+      >
         {iconThemeManager.loadState === 'loading' ? <div className="zed-picker-message">Loading icon themes...</div> : null}
         {filteredIconThemes.length === 0 && iconThemeManager.loadState !== 'loading' ? (
           <div className="zed-picker-message">No icon themes found</div>
         ) : null}
-        {filteredIconThemes.map((iconTheme) => (
+        {filteredIconThemes.map((iconTheme, index) => (
           <PickerRow
             active={iconTheme.id === iconThemeManager.activeIconTheme?.id}
             iconTheme={iconTheme}
             key={iconTheme.id}
             onApply={iconThemeManager.applyIconThemeById}
             onPreview={iconThemeManager.previewIconThemeById}
+            rowId={`icon-theme-picker-row-${index}`}
             selected={iconTheme.id === selectedIconTheme?.id}
           />
         ))}
@@ -128,11 +151,13 @@ function IconThemeSelectorPanel({ iconThemeManager, onClose }) {
   );
 }
 
-function PickerRow({ active, iconTheme, onApply, onPreview, selected }) {
+function PickerRow({ active, iconTheme, onApply, onPreview, rowId, selected }) {
   return (
     <button
       aria-selected={selected}
       className={`zed-picker-row ${selected ? 'is-selected' : ''} ${active ? 'is-active-theme' : ''}`}
+      data-selected={selected ? 'true' : undefined}
+      id={rowId}
       onClick={() => onPreview(iconTheme.id)}
       onDoubleClick={() => onApply(iconTheme.id)}
       onFocus={() => onPreview(iconTheme.id)}
@@ -179,6 +204,8 @@ function handlePanelKeyDown(
   event,
   { filteredIconThemes, onApply, onClose, onPreview, selectedIconThemeIndex },
 ) {
+  event.stopPropagation();
+
   if (event.key === 'Escape') {
     event.preventDefault();
     onClose();

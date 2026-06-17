@@ -137,6 +137,33 @@ const MONACO_SYNTAX_TOKENS = [
   ['variable', 'variable'],
 ];
 
+const MONACO_SEMANTIC_TOKENS = [
+  ['namespace', 'type'],
+  ['type', 'type'],
+  ['class', 'type'],
+  ['enum', 'type'],
+  ['interface', 'type'],
+  ['struct', 'type'],
+  ['typeParameter', 'type'],
+  ['parameter', 'variable'],
+  ['variable', 'variable'],
+  ['property', 'variable'],
+  ['enumMember', 'constant'],
+  ['event', 'type'],
+  ['function', 'function'],
+  ['method', 'function'],
+  ['macro', 'function'],
+  ['keyword', 'keyword'],
+  ['modifier', 'keyword'],
+  ['comment', 'comment'],
+  ['string', 'string'],
+  ['number', 'number'],
+  ['regexp', 'string.regex'],
+  ['operator', 'operator'],
+  ['decorator', 'attribute'],
+  ['tag', 'tag'],
+];
+
 export async function loadBuiltInThemeSources() {
   const settledSources = await Promise.allSettled(
     BUILT_IN_THEME_SOURCES.map(async (source) => {
@@ -347,6 +374,10 @@ export function createMonacoTheme(theme) {
     base: theme?.appearance === 'light' ? 'vs' : 'vs-dark',
     inherit: true,
     rules: MONACO_SYNTAX_TOKENS.map(([token, syntaxName]) => monacoTokenRule(token, style.syntax?.[syntaxName])).filter(Boolean),
+    semanticHighlighting: true,
+    semanticTokenColors: Object.fromEntries(
+      MONACO_SEMANTIC_TOKENS.map(([token, syntaxName]) => monacoSemanticTokenColor(token, style.syntax?.[syntaxName])).filter(Boolean),
+    ),
     colors: {
       'editor.background': solidColor(editorBackground),
       'editor.foreground': solidColor(editorForeground),
@@ -558,6 +589,34 @@ function monacoTokenRule(token, syntaxEntry) {
     foreground,
     ...(styles.length > 0 ? { fontStyle: styles.join(' ') } : {}),
   };
+}
+
+function monacoSemanticTokenColor(token, syntaxEntry) {
+  const foreground = solidColor(syntaxEntry?.color);
+
+  if (!foreground) {
+    return null;
+  }
+
+  const styles = [];
+
+  if (syntaxEntry.font_style === 'italic') {
+    styles.push('italic');
+  }
+
+  if (Number(syntaxEntry.font_weight) >= 600) {
+    styles.push('bold');
+  }
+
+  return [
+    token,
+    styles.length > 0
+      ? {
+          foreground,
+          fontStyle: styles.join(' '),
+        }
+      : foreground,
+  ];
 }
 
 function slugify(value) {
