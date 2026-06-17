@@ -3,6 +3,7 @@ import { defineConfig } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
 
 const gatewayOrigin = process.env.GATEWAY_ORIGIN ?? `http://127.0.0.1:${process.env.GATEWAY_PORT ?? '8080'}`;
+const monacoEditorAssets = new URL('./node_modules/monaco-editor/min/vs', import.meta.url).pathname;
 
 // Docs: https://rsbuild.rs/config/
 export default defineConfig({
@@ -32,6 +33,23 @@ export default defineConfig({
         head: true,
       },
     ],
+  },
+  output: {
+    assetPrefix: '/',
+    copy: [
+      {
+        from: monacoEditorAssets,
+        to: 'vs',
+      },
+    ],
+  },
+  performance: {
+    chunkSplit: {
+      strategy: 'split-by-experience',
+      forceSplitting: {
+        'async-xterm': /node_modules[\\/]@xterm[\\/]xterm[\\/]/,
+      },
+    },
   },
   plugins: [pluginReact()],
   server: {

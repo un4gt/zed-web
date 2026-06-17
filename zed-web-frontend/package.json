@@ -6,11 +6,15 @@
   "scripts": {
     "build": "rsbuild build",
     "dev": "rsbuild dev --open",
-    "preview": "rsbuild preview"
+    "preview": "rsbuild preview",
+    "test": "bun test"
   },
   "dependencies": {
-    "@monaco-editor/react": "^4.7.0",
+    "@pierre/trees": "^1.0.0-beta.3",
     "@xterm/xterm": "^5.5.0",
+    "dompurify": "^3.4.10",
+    "marked": "^18.0.5",
+    "monaco-editor": "^0.55.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "zustand": "^5.0.8"
