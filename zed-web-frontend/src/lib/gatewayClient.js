@@ -17,10 +17,14 @@ export function createSession(gatewayUrl, form) {
   });
 }
 
-export function fetchProjectTree(gatewayUrl, sessionId, path = '') {
+export function fetchProjectTree(gatewayUrl, sessionId, path = '', options = {}) {
   const url = new URL(`${gatewayUrl}/api/sessions/${sessionId}/tree`);
   if (path) {
     url.searchParams.set('path', path);
+  }
+
+  if (options.depth) {
+    url.searchParams.set('depth', String(options.depth));
   }
 
   return requestJson(url);

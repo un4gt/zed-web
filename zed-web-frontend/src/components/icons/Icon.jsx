@@ -61,6 +61,23 @@ function iconPath(name) {
           <path d="M14 5l-4 14" />
         </>
       );
+    case 'preview':
+      return (
+        <>
+          <path d="M3.5 12s3-5 8.5-5 8.5 5 8.5 5-3 5-8.5 5-8.5-5-8.5-5z" />
+          <circle cx="12" cy="12" r="2.5" />
+        </>
+      );
+    case 'source-preview':
+      return (
+        <>
+          <path d="M4 5h16v14H4z" />
+          <path d="M10 5v14" />
+          <path d="M7.5 9l-2 3 2 3" />
+          <path d="M13 12s1.5-2.5 4-2.5 4 2.5 4 2.5-1.5 2.5-4 2.5-4-2.5-4-2.5z" />
+          <circle cx="17" cy="12" r="1" />
+        </>
+      );
     case 'command':
       return (
         <>

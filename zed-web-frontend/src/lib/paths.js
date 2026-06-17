@@ -1,3 +1,5 @@
+import { getLanguageMetadataForPath, getMonacoLanguageIdForPath } from './languages/zedLanguageRegistry';
+
 export function buildWsUrl(baseUrl, path) {
   const url = new URL(path, baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -34,20 +36,9 @@ export function normalizeRemotePath(path) {
 }
 
 export function languageForPath(path) {
-  if (path.endsWith('.rs')) {
-    return 'rust';
-  }
-  if (path.endsWith('.ts') || path.endsWith('.tsx')) {
-    return 'typescript';
-  }
-  if (path.endsWith('.js') || path.endsWith('.jsx')) {
-    return 'javascript';
-  }
-  if (path.endsWith('.json')) {
-    return 'json';
-  }
-  if (path.endsWith('.md')) {
-    return 'markdown';
-  }
-  return 'plaintext';
+  return getMonacoLanguageIdForPath(path);
+}
+
+export function languageMetaForPath(path) {
+  return getLanguageMetadataForPath(path);
 }
