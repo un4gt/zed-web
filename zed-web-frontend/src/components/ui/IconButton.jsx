@@ -1,11 +1,12 @@
 
 import Icon from '../icons/Icon';
 
-function IconButton({ disabled = false, icon, label, onClick, variant = 'ghost' }) {
+function IconButton({ active = false, disabled = false, icon, label, onClick, variant = 'ghost' }) {
   return (
     <button
       aria-label={label}
-      className={`icon-button icon-button-${variant}`}
+      aria-pressed={active}
+      className={`icon-button icon-button-${variant} ${active ? 'is-active' : ''}`}
       disabled={disabled}
       onClick={onClick}
       title={label}

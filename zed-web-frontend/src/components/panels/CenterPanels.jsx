@@ -21,6 +21,12 @@ const UTILITY_PANEL_CONFIG = {
     heading: 'settings.json',
     body: 'Settings file editing will open here once the remote configuration path is available.',
   },
+  keymap: {
+    icon: 'command',
+    title: 'Keymap',
+    heading: 'keymap.json',
+    body: 'Keyboard shortcut editing will open here once user keymaps are connected.',
+  },
   theme: {
     icon: 'sparkles',
     title: 'Theme Selector',

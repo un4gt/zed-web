@@ -1,66 +1,213 @@
-import { useCallback, useEffect, useState } from 'react';
+import { FileTree, useFileTree } from '@pierre/trees/react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import Icon from '../icons/Icon';
-import FileIcon from '../icons/FileIcon';
-import { chevronIconUrl, fileIconUrlForPath, folderIconUrl } from '../../lib/fileIcons';
+import { createPierreTreeIcons } from '../../lib/pierreTreeIcons';
+import { directoryPathsFromTreePaths, entryChildrenToPaths, fromTreePath } from '../../lib/treePaths';
 
-function ProjectTree({ entries, iconTheme, onLoadTree, onOpenFile, session }) {
-  const [expandedPaths, setExpandedPaths] = useState(() => new Set());
-  const [childrenByPath, setChildrenByPath] = useState(() => new Map());
-  const [loadingPaths, setLoadingPaths] = useState(() => new Set());
-  const [failedPaths, setFailedPaths] = useState(() => new Set());
+const DEFAULT_LOADED_TREE_PATHS = [];
+
+const PROJECT_TREE_UNSAFE_CSS = `
+  :host {
+    background: transparent;
+    --truncate-marker-background-color: var(--trees-bg);
+  }
+
+  [data-file-tree-virtualized-scroll='true'] {
+    padding-right: 2px;
+  }
+
+  [data-type='item'] {
+    border: 1px solid transparent;
+    border-radius: var(--trees-border-radius);
+    color: var(--trees-fg);
+    transition:
+      background-color 150ms ease-out,
+      border-color 150ms ease-out,
+      color 150ms ease-out;
+  }
+
+  button[data-type='item'] {
+    cursor: pointer;
+  }
+
+  [data-type='item']:hover,
+  [data-type='item'][data-item-context-hover='true'] {
+    background-color: var(--trees-bg-muted);
+    color: var(--trees-selected-fg);
+  }
+
+  [data-type='item'][data-item-selected] {
+    background-color: var(--trees-selected-bg);
+    color: var(--trees-selected-fg);
+  }
+
+  [data-type='item'][data-item-focused] {
+    outline: var(--trees-focus-ring-width) solid var(--trees-focus-ring-color);
+    outline-offset: var(--trees-focus-ring-offset);
+  }
+
+  [data-item-section='icon'] {
+    color: var(--trees-fg-muted);
+    width: var(--trees-icon-width);
+  }
+
+  [data-item-section='icon'] svg {
+    width: var(--trees-icon-width);
+    height: var(--trees-icon-width);
+  }
+
+  [data-item-type='file'] > [data-item-section='icon'] {
+    color: currentColor;
+  }
+
+  [data-item-section='decoration'] > span {
+    color: var(--trees-fg-muted);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 10px;
+  }
+`;
+
+const TREE_HOST_STYLE = {
+  height: '100%',
+  minHeight: 0,
+  '--trees-accent-override': 'var(--accent)',
+  '--trees-bg-muted-override': 'var(--bg-hover)',
+  '--trees-bg-override': 'transparent',
+  '--trees-border-color-override': 'var(--border-muted)',
+  '--trees-border-radius-override': '5px',
+  '--trees-file-icon-color': 'var(--text-muted)',
+  '--trees-fg-muted-override': 'var(--text-subtle)',
+  '--trees-fg-override': 'var(--text-muted)',
+  '--trees-focus-ring-color-override': 'var(--border-focus)',
+  '--trees-focus-ring-offset-override': '-1px',
+  '--trees-focus-ring-width-override': '1px',
+  '--trees-font-family-override': 'var(--font-ui)',
+  '--trees-font-size-override': '12px',
+  '--trees-icon-width-override': '15px',
+  '--trees-item-margin-x-override': '0px',
+  '--trees-item-padding-x-override': '7px',
+  '--trees-item-row-gap-override': '5px',
+  '--trees-level-gap-override': '14px',
+  '--trees-padding-inline-override': '0px',
+  '--trees-scrollbar-gutter-override': '6px',
+  '--trees-search-bg-override': 'var(--bg-input)',
+  '--trees-search-fg-override': 'var(--text)',
+  '--trees-selected-bg-override': 'var(--bg-active)',
+  '--trees-selected-focused-border-color-override': 'var(--border-focus)',
+  '--trees-selected-fg-override': 'var(--text)',
+};
+
+function ProjectTree({ entries, iconTheme, onLoadTree, onOpenFile, session, treeLoadedPaths = DEFAULT_LOADED_TREE_PATHS }) {
+  const modelRef = useRef(null);
+  const onLoadTreeRef = useRef(onLoadTree);
+  const onOpenFileRef = useRef(onOpenFile);
+  const sessionIdRef = useRef(session?.id ?? null);
+  const knownDirectoryPathsRef = useRef(new Set());
+  const loadedDirectoryPathsRef = useRef(new Set());
+  const loadingDirectoryPathsRef = useRef(new Set());
+  const failedDirectoryPathsRef = useRef(new Set());
+  const loadGenerationRef = useRef(0);
+
+  const rootPaths = useMemo(() => entryChildrenToPaths(entries), [entries]);
+  const loadedTreePaths = useMemo(() => loadedPathsToTreePaths(treeLoadedPaths), [treeLoadedPaths]);
+  const treeIcons = useMemo(() => createPierreTreeIcons(iconTheme), [iconTheme]);
+
+  const handleSelectionChange = useCallback((selectedPaths) => {
+    const selectedPath = selectedPaths.at(-1);
+    const model = modelRef.current;
+
+    if (!selectedPath || !model) {
+      return;
+    }
+
+    const item = model.getItem(selectedPath);
+    if (!item || item.isDirectory()) {
+      return;
+    }
+
+    onOpenFileRef.current(fromTreePath(selectedPath));
+  }, []);
+
+  const renderRowDecoration = useCallback(({ item }) => {
+    if (failedDirectoryPathsRef.current.has(item.path)) {
+      return {
+        text: 'Failed',
+        title: 'Failed to load folder',
+      };
+    }
+
+    if (loadingDirectoryPathsRef.current.has(item.path)) {
+      return {
+        text: 'Loading...',
+        title: 'Loading folder',
+      };
+    }
+
+    return null;
+  }, []);
+
+  const { model } = useFileTree({
+    density: 'compact',
+    fileTreeSearchMode: 'hide-non-matches',
+    flattenEmptyDirectories: false,
+    icons: treeIcons,
+    initialExpansion: 'closed',
+    itemHeight: 28,
+    onSelectionChange: handleSelectionChange,
+    paths: rootPaths,
+    renderRowDecoration,
+    search: true,
+    unsafeCSS: PROJECT_TREE_UNSAFE_CSS,
+  });
+
+  modelRef.current = model;
 
   useEffect(() => {
-    setExpandedPaths(new Set());
-    setChildrenByPath(new Map());
-    setLoadingPaths(new Set());
-    setFailedPaths(new Set());
-  }, [session?.id, entries]);
+    onLoadTreeRef.current = onLoadTree;
+  }, [onLoadTree]);
 
-  const toggleDirectory = useCallback(
-    async (entry) => {
-      if (!session?.id) {
+  useEffect(() => {
+    onOpenFileRef.current = onOpenFile;
+  }, [onOpenFile]);
+
+  useEffect(() => {
+    model.setIcons(treeIcons);
+  }, [model, treeIcons]);
+
+  useEffect(() => {
+    loadGenerationRef.current += 1;
+    sessionIdRef.current = session?.id ?? null;
+    knownDirectoryPathsRef.current = directoryPathsFromTreePaths(rootPaths);
+    loadedDirectoryPathsRef.current = loadedTreePaths;
+    loadingDirectoryPathsRef.current = new Set();
+    failedDirectoryPathsRef.current = new Set();
+    model.resetPaths(rootPaths, { initialExpandedPaths: [] });
+  }, [loadedTreePaths, model, rootPaths, session?.id]);
+
+  useEffect(() => {
+    const unsubscribe = model.subscribe(() => {
+      loadExpandedDirectories(model);
+    });
+
+    return unsubscribe;
+  }, [model]);
+
+  const handleTreeKeyDownCapture = useCallback(
+    (event) => {
+      if (event.key !== 'Enter' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || model.isSearchOpen()) {
         return;
       }
 
-      if (expandedPaths.has(entry.path)) {
-        setExpandedPaths((currentPaths) => removeSetValue(currentPaths, entry.path));
+      const item = model.getFocusedItem();
+      if (!item || item.isDirectory()) {
         return;
       }
 
-      setExpandedPaths((currentPaths) => addSetValue(currentPaths, entry.path));
-      if (childrenByPath.has(entry.path) || loadingPaths.has(entry.path)) {
-        return;
-      }
-
-      setLoadingPaths((currentPaths) => addSetValue(currentPaths, entry.path));
-      setFailedPaths((currentPaths) => removeSetValue(currentPaths, entry.path));
-
-      const payload = await onLoadTree(session.id, entry.path, { replace: false });
-      if (payload?.entries) {
-        setChildrenByPath((currentChildren) => {
-          const nextChildren = new Map(currentChildren);
-          nextChildren.set(entry.path, payload.entries);
-          return nextChildren;
-        });
-      } else {
-        setFailedPaths((currentPaths) => addSetValue(currentPaths, entry.path));
-      }
-
-      setLoadingPaths((currentPaths) => removeSetValue(currentPaths, entry.path));
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenFileRef.current(fromTreePath(item.getPath()));
     },
-    [childrenByPath, expandedPaths, loadingPaths, onLoadTree, session?.id],
-  );
-
-  const handleEntryOpen = useCallback(
-    (entry) => {
-      if (entry.kind === 'directory') {
-        toggleDirectory(entry);
-        return;
-      }
-
-      onOpenFile(entry.path);
-    },
-    [onOpenFile, toggleDirectory],
+    [model],
   );
 
   return (
@@ -71,17 +218,13 @@ function ProjectTree({ entries, iconTheme, onLoadTree, onOpenFile, session }) {
       </div>
 
       {entries.length > 0 ? (
-        <ul className="tree-list" role="tree">
-          <TreeRows
-            childrenByPath={childrenByPath}
-            entries={entries}
-            expandedPaths={expandedPaths}
-            failedPaths={failedPaths}
-            iconTheme={iconTheme}
-            loadingPaths={loadingPaths}
-            onEntryOpen={handleEntryOpen}
-          />
-        </ul>
+        <FileTree
+          aria-label="Project files"
+          className="project-file-tree"
+          model={model}
+          onKeyDownCapture={handleTreeKeyDownCapture}
+          style={TREE_HOST_STYLE}
+        />
       ) : (
         <div className="tree-empty">
           <Icon name="folder" />
@@ -90,87 +233,94 @@ function ProjectTree({ entries, iconTheme, onLoadTree, onOpenFile, session }) {
       )}
     </section>
   );
+
+  function loadExpandedDirectories(currentModel) {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      return;
+    }
+
+    for (const directoryPath of knownDirectoryPathsRef.current) {
+      const directory = currentModel.getItem(directoryPath);
+      if (!directory?.isDirectory() || !directory.isExpanded()) {
+        continue;
+      }
+
+      if (
+        loadedDirectoryPathsRef.current.has(directoryPath) ||
+        loadingDirectoryPathsRef.current.has(directoryPath) ||
+        failedDirectoryPathsRef.current.has(directoryPath)
+      ) {
+        continue;
+      }
+
+      loadDirectoryChildren(currentModel, sessionId, directoryPath, loadGenerationRef.current);
+    }
+  }
+
+  async function loadDirectoryChildren(currentModel, sessionId, directoryPath, generation) {
+    loadingDirectoryPathsRef.current.add(directoryPath);
+    failedDirectoryPathsRef.current.delete(directoryPath);
+    refreshTreeView(currentModel);
+
+    try {
+      const payload = await onLoadTreeRef.current(sessionId, fromTreePath(directoryPath), { replace: false });
+
+      if (sessionIdRef.current !== sessionId || loadGenerationRef.current !== generation) {
+        return;
+      }
+
+      if (!payload?.entries) {
+        failedDirectoryPathsRef.current.add(directoryPath);
+        return;
+      }
+
+      const loadedPaths = entryChildrenToPaths(payload.entries);
+      if (loadedPaths.length > 0) {
+        currentModel.batch(loadedPaths.map((path) => ({ type: 'add', path })));
+      }
+
+      for (const childDirectoryPath of directoryPathsFromTreePaths(loadedPaths)) {
+        knownDirectoryPathsRef.current.add(childDirectoryPath);
+      }
+
+      const loadedDirectoryPaths = payload.loaded_paths ? loadedPathsToTreePaths(payload.loaded_paths) : new Set([directoryPath]);
+
+      for (const loadedDirectoryPath of loadedDirectoryPaths) {
+        knownDirectoryPathsRef.current.add(loadedDirectoryPath);
+        loadedDirectoryPathsRef.current.add(loadedDirectoryPath);
+      }
+
+      failedDirectoryPathsRef.current.delete(directoryPath);
+    } catch {
+      if (sessionIdRef.current === sessionId && loadGenerationRef.current === generation) {
+        failedDirectoryPathsRef.current.add(directoryPath);
+      }
+    } finally {
+      if (sessionIdRef.current === sessionId && loadGenerationRef.current === generation) {
+        loadingDirectoryPathsRef.current.delete(directoryPath);
+        refreshTreeView(currentModel);
+      }
+    }
+  }
 }
 
-function TreeRows({
-  childrenByPath,
-  depth = 0,
-  entries,
-  expandedPaths,
-  failedPaths,
-  iconTheme,
-  loadingPaths,
-  onEntryOpen,
-}) {
-  return entries.map((entry) => {
-    const directory = entry.kind === 'directory';
-    const expanded = directory && expandedPaths.has(entry.path);
-    const loading = directory && loadingPaths.has(entry.path);
-    const failed = directory && failedPaths.has(entry.path);
-    const children = childrenByPath.get(entry.path) ?? [];
-    const loaded = childrenByPath.has(entry.path);
-
-    return (
-      <li key={entry.path} role="none">
-        <button
-          aria-expanded={directory ? expanded : undefined}
-          className={`tree-entry tree-entry-${entry.kind} ${expanded ? 'is-expanded' : ''}`}
-          onClick={() => onEntryOpen(entry)}
-          role="treeitem"
-          style={{ '--tree-depth': depth }}
-          type="button"
-        >
-          <span className="tree-entry-chevron">
-            {directory ? <FileIcon src={chevronIconUrl(expanded, iconTheme)} /> : null}
-          </span>
-          <FileIcon src={directory ? folderIconUrl(expanded, iconTheme, entry.path) : fileIconUrlForPath(entry.path, iconTheme)} />
-          <span>{entry.name}</span>
-        </button>
-
-        {expanded ? (
-          <ul className="tree-children" role="group">
-            {loading ? <TreeMessage depth={depth + 1} message="Loading..." /> : null}
-            {failed ? <TreeMessage depth={depth + 1} message="Failed to load folder" tone="danger" /> : null}
-            {!loading && !failed && loaded && children.length === 0 ? (
-              <TreeMessage depth={depth + 1} message="Empty" />
-            ) : null}
-            {!loading && !failed && children.length > 0 ? (
-              <TreeRows
-                childrenByPath={childrenByPath}
-                depth={depth + 1}
-                entries={children}
-                expandedPaths={expandedPaths}
-                failedPaths={failedPaths}
-                iconTheme={iconTheme}
-                loadingPaths={loadingPaths}
-                onEntryOpen={onEntryOpen}
-              />
-            ) : null}
-          </ul>
-        ) : null}
-      </li>
-    );
-  });
+function refreshTreeView(model) {
+  model.setComposition(model.getComposition());
 }
 
-function TreeMessage({ depth, message, tone = 'muted' }) {
-  return (
-    <li className={`tree-message tree-message-${tone}`} role="none" style={{ '--tree-depth': depth }}>
-      {message}
-    </li>
-  );
-}
+function loadedPathsToTreePaths(paths) {
+  const treePaths = new Set();
 
-function addSetValue(values, value) {
-  const nextValues = new Set(values);
-  nextValues.add(value);
-  return nextValues;
-}
+  for (const path of paths ?? []) {
+    if (!path) {
+      continue;
+    }
 
-function removeSetValue(values, value) {
-  const nextValues = new Set(values);
-  nextValues.delete(value);
-  return nextValues;
+    treePaths.add(path.endsWith('/') ? path : `${path}/`);
+  }
+
+  return treePaths;
 }
 
 export default ProjectTree;

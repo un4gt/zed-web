@@ -22,6 +22,7 @@ function LeftDock({
   onOpenSession,
   onReconnect,
   session,
+  treeLoadedPaths,
 }) {
   return (
     <aside className="left-dock" aria-label={LEFT_DOCK_TITLES[mode] ?? 'Left dock'}>
@@ -36,6 +37,7 @@ function LeftDock({
             onLoadTree={onLoadTree}
             onOpenFile={onOpenFile}
             session={session}
+            treeLoadedPaths={treeLoadedPaths}
           />
         </>
       ) : null}

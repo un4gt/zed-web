@@ -1,8 +1,10 @@
+import { lazy, Suspense } from 'react';
 import { BOTTOM_PANEL_TITLES } from '../../constants/panels';
 import Icon from '../icons/Icon';
 import IconButton from '../ui/IconButton';
 import StatusBadge from '../ui/StatusBadge';
-import TerminalView from '../terminal/TerminalView';
+
+const TerminalView = lazy(() => import('../terminal/TerminalView'));
 
 function BottomPanel({
   activeTheme,
@@ -68,14 +70,16 @@ function BottomPanel({
           <IconButton icon="close" label="Close terminal" onClick={onClose} variant="ghost" />
         </div>
       </div>
-      <TerminalView
-        activeTheme={activeTheme}
-        gatewayUrl={gatewayUrl}
-        instanceKey={terminalInstanceKey}
-        onLog={onLog}
-        onStatusChange={onStatusChange}
-        session={session}
-      />
+      <Suspense fallback={<div className="terminal-surface terminal-loading">Loading terminal</div>}>
+        <TerminalView
+          activeTheme={activeTheme}
+          gatewayUrl={gatewayUrl}
+          instanceKey={terminalInstanceKey}
+          onLog={onLog}
+          onStatusChange={onStatusChange}
+          session={session}
+        />
+      </Suspense>
     </section>
   );
 }
