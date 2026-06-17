@@ -6,5 +6,8 @@
 /zed-web-frontend/dist
 /zed-web-frontend/node_modules
 /zed-web-frontend/test-results
+/docs/.docusaurus
+/docs/build
+/docs/node_modules
 .env
 /.vscode-ai-images/
