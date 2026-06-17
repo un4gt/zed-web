@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -z "${ZEW_USERNAME:-}" ] || [ -z "${ZEW_PASSWORD:-}" ]; then
+  echo "ZEW_USERNAME and ZEW_PASSWORD must be set before starting zed-web." >&2
+  exit 1
+fi
+
+export FRONTEND_DIR="${FRONTEND_DIR:-/opt/zed-web/frontend}"
+
 mkdir -p "${ZED_WEB_DATA_DIR:-/var/lib/zed-web}"
 
 if [ -S /ssh-agent ]; then
